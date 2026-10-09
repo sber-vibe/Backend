@@ -1,0 +1,6 @@
+* text=auto
+# скрипты, которые выполняются в Linux-контейнере, всегда с LF — иначе /bin/sh^M при сборке на Windows
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.jar binary
