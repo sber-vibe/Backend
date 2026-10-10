@@ -82,6 +82,8 @@ public class DocumentContentReader implements DocumentReader {
             case "txt" ->
                     new DocumentContent(readTxt(data), List.of());
 
+            case "doc", "xls", "xlsx" -> new DocumentContent(OfficePreview.text(data, extension), List.of());
+
             case "png" -> {
                 require(startsWith(data, new byte[]{
                         (byte) 137, 80, 78, 71, 13, 10, 26, 10
@@ -337,8 +339,12 @@ public class DocumentContentReader implements DocumentReader {
     }
 
 
-    private void validateDocxArchive(byte[] data)
+    static void validateDocxArchive(byte[] data)
             throws IOException {
+        validateOfficeArchive(data, "word/document.xml");
+    }
+
+    static void validateOfficeArchive(byte[] data, String requiredPart) throws IOException {
 
         int entryCount = 0;
         long totalBytes = 0;
@@ -367,7 +373,7 @@ public class DocumentContentReader implements DocumentReader {
                     hasContentTypes = true;
                 }
 
-                if (entry.getName().equals("word/document.xml")) {
+                if (entry.getName().equals(requiredPart)) {
                     hasDocument = true;
                 }
 

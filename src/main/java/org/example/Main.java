@@ -11,12 +11,12 @@ public class Main {
     public static void main(String[] args) {
 
         if (args.length == 4
-                && "--ai-parser-worker".equals(args[0])) {
+                && ("--ai-parser-worker".equals(args[0]) || "--office-preview-worker".equals(args[0]))) {
 
             int exitCode = DocumentParserWorker.run(
                     args[1],
                     args[2],
-                    args[3]
+                    args[3], "--office-preview-worker".equals(args[0])
             );
 
             System.exit(exitCode);

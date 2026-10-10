@@ -12,7 +12,7 @@ class ApplicationServiceTest {
             (content, filename) -> new DocumentRecognizer.Recognition(DocumentType.UNKNOWN, null, java.util.List.of()), Runnable::run);
 
     private UUID create() {
-        return service.create(new Models.CreateApplication(null)).id();
+        return service.create(new Models.CreateApplication("INNOVATION")).id();
     }
 
     private MockMultipartFile file(String filename) {
@@ -22,7 +22,7 @@ class ApplicationServiceTest {
     @Test
     void missingDocumentsAreReported() {
         var report = service.check(create());
-        assertEquals("INCOMPLETE", report.status());
+        assertEquals("ERRORS", report.status());
         assertEquals(3, report.findings().stream().filter(finding -> finding.code().equals("MISSING_DOCUMENT")).count());
     }
 
@@ -32,7 +32,7 @@ class ApplicationServiceTest {
         for (DocumentType type : service.requiredTypes()) {
             service.upload(id, type, file("document.txt"));
         }
-        assertEquals("REVIEW_REQUIRED", service.check(id).status());
+        assertEquals("ATTENTION", service.check(id).status());
         var duplicate = service.upload(id, DocumentType.APPLICATION, file("duplicate.txt"));
         assertNull(service.get(id).report());
         assertTrue(service.check(id).findings().stream().anyMatch(finding -> finding.code().equals("DUPLICATE_DOCUMENT")));

@@ -100,9 +100,10 @@ class ApplicationRequisitesTest {
         UUID automatic = create(); service.upload(automatic, null, file()); process();
         assertEquals("INNOVATION", service.get(automatic).programCode());
         assertTrue(service.get(automatic).programDetected());
-        UUID selected = service.create(new CreateApplication("SELECTED")).id();
+        UUID selected = service.create(new CreateApplication("INNOVATION")).id();
+        next = new DocumentRecognizer.Recognition(DocumentType.APPLICATION, 0.9, List.of(field("program_code", "OTHER", 0.9)));
         service.upload(selected, null, file()); process();
-        assertEquals("SELECTED", service.get(selected).programCode());
+        assertEquals("INNOVATION", service.get(selected).programCode());
         assertFalse(service.get(selected).programDetected());
         UUID blank = create(); next = result("Компания", null); service.upload(blank, null, file()); process();
         assertNull(service.get(blank).programCode());

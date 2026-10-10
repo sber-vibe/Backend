@@ -12,7 +12,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 
-@RestControllerAdvice(assignableTypes = ApplicationController.class)
+@RestControllerAdvice(assignableTypes = {ApplicationController.class, AdminController.class})
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class ApplicationErrors {
     @ExceptionHandler(IOException.class)

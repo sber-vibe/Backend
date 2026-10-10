@@ -40,6 +40,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        .requestMatchers("/api/v1/admin/**").hasRole("admin")
                         .requestMatchers("/api/**").hasAnyRole(API_ROLES)
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth

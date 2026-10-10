@@ -123,6 +123,68 @@ class ApplicationRequisitesApiTest {
     }
 
     @Test
+    void officePreviewIsPendingThenStaticHtmlAndDecisionIsStored() throws Exception {
+        String appPath = request("/api/v1/applications", "POST", "{\"programCode\":\"INNOVATION\"}").headers().firstValue("Location").orElseThrow();
+        for (String extension : List.of("docx", "xls", "xlsx")) {
+            byte[] content;
+            try (var output = new java.io.ByteArrayOutputStream()) {
+                if ("docx".equals(extension)) {
+                    try (var word = new org.apache.poi.xwpf.usermodel.XWPFDocument()) {
+                        word.createParagraph().createRun().setText("Документ <script>alert(1)</script>"); word.write(output);
+                    }
+                } else {
+                    try (org.apache.poi.ss.usermodel.Workbook book = "xls".equals(extension) ? new org.apache.poi.hssf.usermodel.HSSFWorkbook() : new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
+                        book.createSheet("Расходы").createRow(0).createCell(0).setCellValue("<script>alert(1)</script>"); book.write(output);
+                    }
+                }
+                content = output.toByteArray();
+            }
+            String boundary = "office-preview-boundary";
+            var multipart = new java.io.ByteArrayOutputStream();
+            multipart.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test." + extension + "\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            multipart.write(content); multipart.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            var upload = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + appPath + "/documents"))
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(HttpRequest.BodyPublishers.ofByteArray(multipart.toByteArray())).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(201, upload.statusCode(), upload.body());
+            String docPath = upload.headers().firstValue("Location").orElseThrow();
+            var preview = request(docPath + "/preview", "GET", null);
+            assertEquals(202, preview.statusCode());
+            assertEquals("3", preview.headers().firstValue("Retry-After").orElseThrow());
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+            do { Thread.sleep(20); preview = request(docPath + "/preview", "GET", null); }
+            while (preview.statusCode() == 202 && System.nanoTime() < deadline);
+            assertEquals(200, preview.statusCode(), preview.body());
+            assertTrue(preview.headers().firstValue("Content-Type").orElseThrow().contains("text/html"));
+            assertTrue(preview.body().contains("&lt;script&gt;"));
+            assertFalse(preview.body().contains("<script>"));
+            assertTrue(preview.headers().firstValue("Content-Security-Policy").orElseThrow().contains("sandbox"));
+            var original = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + docPath)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertArrayEquals(content, original.body());
+        }
+        var decision = request(appPath + "/decision", "POST", "{\"decision\":\"RETURNED\",\"comment\":\"Дослать документы\"}");
+        assertEquals(200, decision.statusCode());
+        assertEquals("RETURNED", JSON.readTree(request(appPath, "GET", null).body()).get("decision").get("decision").asString());
+        assertEquals(400, request(appPath + "/decision", "POST", "{\"decision\":\"REJECTED\",\"comment\":\" \"}").statusCode());
+        assertTrue(request(appPath + "/journal", "GET", null).body().contains("DECISION_MADE"));
+    }
+
+    @Test
+    void adminProgramCrudAndValidationWorkThroughHttp() throws Exception {
+        var body = "{\"code\":\"HTTP_TEST\",\"name\":\"Программа\",\"active\":true,\"documents\":[{\"type\":\"APPLICATION\",\"requirement\":\"REQUIRED\"}]}";
+        assertEquals(201, request("/api/v1/admin/programs", "POST", body).statusCode());
+        assertTrue(request("/api/v1/programs", "GET", null).body().contains("HTTP_TEST"));
+        assertEquals(200, request("/api/v1/admin/programs/HTTP_TEST", "PUT", body.replace("\"active\":true", "\"active\":false")).statusCode());
+        assertFalse(request("/api/v1/programs", "GET", null).body().contains("HTTP_TEST"));
+        assertEquals(400, request("/api/v1/applications", "POST", "{\"programCode\":\"HTTP_TEST\"}").statusCode());
+        assertEquals(400, request("/api/v1/admin/programs/HTTP_TEST", "PUT", body.replace("HTTP_TEST", "OTHER")).statusCode());
+        assertEquals(400, request("/api/v1/admin/programs", "POST", "{}").statusCode());
+        var rules = JSON.readTree(request("/api/v1/admin/rules", "GET", null).body());
+        var rule = rules.get(0);
+        assertEquals(200, request("/api/v1/admin/rules/" + rule.get("code").asString(), "PUT", rule.toString()).statusCode());
+        assertTrue(request("/api/v1/admin/journal", "GET", null).body().contains("PROGRAM_CHANGED"));
+    }
+
+    @Test
     void elevenMiBPdfPassesMultipartAndIsolatedParser() throws Exception {
         byte[] pdf;
         try (var document = new org.apache.pdfbox.pdmodel.PDDocument();

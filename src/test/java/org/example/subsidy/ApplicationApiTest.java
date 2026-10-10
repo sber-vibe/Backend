@@ -31,7 +31,7 @@ class ApplicationApiTest {
         var report = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + location + "/check"))
                 .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(200, report.statusCode());
-        assertTrue(report.body().contains("INCOMPLETE"));
+        assertTrue(report.body().contains("ATTENTION"));
     }
 
     @Test

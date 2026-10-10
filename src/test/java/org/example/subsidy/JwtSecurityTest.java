@@ -87,6 +87,29 @@ class JwtSecurityTest {
     }
 
     @Test
+    void adminEndpointsRequireAdminAndPreviewRequiresSession() throws Exception {
+        String specialist = token(KEY, claims().build());
+        String admin = token(KEY, claims().claim("realm_access", Map.of("roles", List.of("admin"))).build());
+        assertEquals(403, get("/api/v1/admin/programs", specialist).statusCode());
+        assertEquals(403, get("/api/v1/admin/rules", specialist).statusCode());
+        assertEquals(403, get("/api/v1/admin/journal", specialist).statusCode());
+        assertEquals(200, get("/api/v1/admin/programs", admin).statusCode());
+        assertEquals(200, get("/api/v1/admin/rules", admin).statusCode());
+        assertEquals(401, get("/api/v1/applications/" + java.util.UUID.randomUUID() + "/documents/" + java.util.UUID.randomUUID() + "/preview", null).statusCode());
+        String base = "http://localhost:" + port;
+        var response = client.send(HttpRequest.newBuilder(URI.create(base + "/api/v1/applications"))
+                .header("Authorization", "Bearer " + specialist).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
+        String path = response.headers().firstValue("Location").orElseThrow();
+        var decision = client.send(HttpRequest.newBuilder(URI.create(base + path + "/decision"))
+                .header("Authorization", "Bearer " + specialist).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"ACCEPTED\",\"decidedBy\":\"forged\"}")).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, decision.statusCode());
+        assertTrue(decision.body().contains("\"decidedBy\":\"specialist\""));
+        assertFalse(decision.body().contains("forged"));
+    }
+
+    @Test
     void healthIsPublic() throws Exception {
         assertEquals(200, get("/actuator/health", null).statusCode());
     }

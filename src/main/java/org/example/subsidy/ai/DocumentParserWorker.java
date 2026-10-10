@@ -19,12 +19,16 @@ public final class DocumentParserWorker {
             String outputPath,
             String extension
     ) {
+        return run(inputPath, outputPath, extension, false);
+    }
+
+    public static int run(String inputPath, String outputPath, String extension, boolean preview) {
         try {
             byte[] data = Files.readAllBytes(
                     Path.of(inputPath)
             );
 
-            DocumentContent content =
+            DocumentContent content = preview ? new DocumentContent(OfficePreview.render(data, extension), java.util.List.of()) :
                     new DocumentContentReader().read(
                             data,
                             "document." + extension
@@ -55,7 +59,7 @@ public final class DocumentParserWorker {
 
             return 0;
 
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return 3;
         }
     }

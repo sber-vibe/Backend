@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -22,37 +23,52 @@ public class ApplicationService {
     private final Map<UUID, ApplicationState> applications = new LinkedHashMap<>();
     private final DocumentRecognizer recognizer;
     private final Executor processingQueue;
+    private final CheckSettings settings;
+    private final long processingTimeoutSeconds;
+    private final ExecutorService modelWorkers = Executors.newFixedThreadPool(2, task -> {
+        var thread = new Thread(task, "document-model-worker"); thread.setDaemon(true); return thread;
+    });
     private long storedBytes;
 
     @Autowired
-    public ApplicationService(DocumentRecognizer recognizer) {
+    public ApplicationService(DocumentRecognizer recognizer, CheckSettings settings,
+                              @Value("${document.processing-timeout-seconds:240}") long timeout) {
         this(recognizer, Executors.newSingleThreadExecutor(task -> {
             var thread = new Thread(task, "application-document-processing");
             thread.setDaemon(true);
             return thread;
-        }));
+        }), settings, timeout);
     }
 
     ApplicationService(DocumentRecognizer recognizer, Executor processingQueue) {
+        this(recognizer, processingQueue, new CheckSettings(), 240);
+    }
+    ApplicationService(DocumentRecognizer recognizer) { this(recognizer, new CheckSettings(), 240); }
+
+    ApplicationService(DocumentRecognizer recognizer, Executor processingQueue, CheckSettings settings, long timeout) {
         this.recognizer = recognizer;
         this.processingQueue = processingQueue;
+        this.settings = settings;
+        this.processingTimeoutSeconds = Math.max(1, Math.min(600, timeout));
     }
 
     @PreDestroy
     public void stop() {
         if (processingQueue instanceof ExecutorService executor) executor.shutdownNow();
+        modelWorkers.shutdownNow();
     }
 
     public List<DocumentType> requiredTypes() { return List.copyOf(REQUIRED); }
     public List<DocumentType> documentTypes() { return Arrays.stream(DocumentType.values()).filter(type -> type != DocumentType.UNKNOWN).toList(); }
     public List<Program> programs() {
-        return List.of(new Program("INNOVATION", "Инновационный проект", true,
-                REQUIRED.stream().map(type -> new ProgramDocument(type, "REQUIRED")).toList()));
+        return settings.programs(true);
     }
 
     public synchronized ApplicationView create(CreateApplication request) {
         if (applications.size() >= 100) throw error(HttpStatus.CONFLICT, "Достигнут лимит: 100 заявок");
-        var state = new ApplicationState(UUID.randomUUID(), blankToNull(request.programCode()), Instant.now());
+        String code = blankToNull(request.programCode());
+        if (code != null && (settings.program(code) == null || !settings.program(code).active())) throw error(HttpStatus.BAD_REQUEST, "Выберите действующую программу субсидии");
+        var state = new ApplicationState(UUID.randomUUID(), code, Instant.now());
         applications.put(state.id, state);
         journal(state, null, "APPLICATION_CREATED", "Создана заявка", "Система", "SYSTEM", null, null);
         return view(state);
@@ -62,7 +78,22 @@ public class ApplicationService {
         return applications.values().stream().map(this::view).sorted(Comparator.comparing(ApplicationView::createdAt).reversed()).toList();
     }
     public synchronized ApplicationView get(UUID id) { return view(require(id)); }
+    public synchronized DocumentView document(UUID id, UUID documentId) { return requireDocument(require(id), documentId).view(); }
     public synchronized List<JournalEntry> journal(UUID id) { return List.copyOf(require(id).journal); }
+    public synchronized List<JournalEntry> allJournal(int limit) {
+        return applications.values().stream().flatMap(state -> state.journal.stream())
+                .sorted(Comparator.comparing(JournalEntry::at).reversed()).limit(Math.max(1, Math.min(limit, 1000))).toList();
+    }
+
+    public synchronized ApplicationView decide(UUID id, DecisionRequest request, String actor) {
+        var state = require(id);
+        String comment = blankToNull(request.comment());
+        if (request.decision() != DecisionCode.ACCEPTED && comment == null) throw error(HttpStatus.BAD_REQUEST, "Для возврата или отклонения укажите комментарий");
+        String specialist = blankToNull(actor) == null ? "Специалист" : actor;
+        state.decision = new Decision(request.decision(), comment, specialist, Instant.now());
+        journal(state, null, "DECISION_MADE", "Сохранено решение специалиста", specialist, "SPECIALIST", request.decision().name(), comment);
+        return view(state);
+    }
 
     public synchronized DocumentView upload(UUID id, DocumentType type, MultipartFile file) throws IOException {
         var state = require(id);
@@ -71,13 +102,13 @@ public class ApplicationService {
         if (file.getSize() > MAX_FILE_SIZE || storedBytes + file.getSize() > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 50 МБ на файл, 50 МБ на все документы");
         String filename = file.getOriginalFilename();
         if (filename == null || filename.length() > 255 || filename.contains("/") || filename.contains("\\") || filename.chars().anyMatch(Character::isISOControl)) throw error(HttpStatus.BAD_REQUEST, "Недопустимое имя файла");
-        if (!filename.toLowerCase(Locale.ROOT).matches(".+\\.(pdf|docx|txt|png|jpg|jpeg)$")) throw error(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Допустимые форматы: PDF, DOCX, TXT, PNG, JPG, JPEG");
+        if (!filename.toLowerCase(Locale.ROOT).matches(".+\\.(pdf|doc|docx|xls|xlsx|txt|png|jpg|jpeg)$")) throw error(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Допустимые форматы: PDF, DOC, DOCX, XLS, XLSX, TXT, PNG, JPG, JPEG");
         byte[] content = file.getBytes();
         if (content.length > MAX_FILE_SIZE || storedBytes + content.length > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 50 МБ на файл, 50 МБ на все документы");
         var document = new StoredDocument(UUID.randomUUID(), type, filename, content, Instant.now());
         state.documents.put(document.id, document);
         storedBytes += content.length;
-        state.report = null;
+        invalidateReport(state);
         journal(state, document.id, "DOCUMENT_UPLOADED", "Загружен документ «" + filename + "»", "Система", "SYSTEM", "UPLOADED", null);
         var response = document.view();
         enqueue(state, document);
@@ -105,7 +136,15 @@ public class ApplicationService {
             filename = document.filename;
         }
         try {
-            var result = recognizer.recognize(content, filename);
+            var job = modelWorkers.submit(() -> recognizer.recognize(content, filename));
+            DocumentRecognizer.Recognition result;
+            try { result = job.get(processingTimeoutSeconds, TimeUnit.SECONDS); }
+            catch (TimeoutException exception) { job.cancel(true); throw error(HttpStatus.GATEWAY_TIMEOUT, "Превышено время обработки документа"); }
+            catch (InterruptedException exception) { job.cancel(true); throw exception; }
+            catch (ExecutionException exception) {
+                if (exception.getCause() instanceof Exception cause) throw cause;
+                throw new IllegalStateException("Document processing failed", exception.getCause());
+            }
             synchronized (this) {
                 var document = current(id, documentId, revision);
                 if (document == null) return;
@@ -145,7 +184,13 @@ public class ApplicationService {
 
     private void updatePendingReport(ApplicationState state) {
         boolean pending = state.report != null && "PROCESSING".equals(state.report.status());
-        state.report = pending ? buildReport(state) : null;
+        if (pending) state.report = buildReport(state);
+        else invalidateReport(state);
+    }
+
+    private static void invalidateReport(ApplicationState state) {
+        state.report = null;
+        state.documents.values().forEach(document -> document.outcome = null);
     }
 
     private StoredDocument current(UUID id, UUID documentId, long revision) {
@@ -161,7 +206,7 @@ public class ApplicationService {
         var removed = requireDocument(state, documentId);
         state.documents.remove(documentId);
         storedBytes -= removed.content.length;
-        state.report = null;
+        invalidateReport(state);
         journal(state, documentId, "DOCUMENT_DELETED", "Удалён документ «" + removed.filename + "»", "Система", "SYSTEM", null, null);
     }
 
@@ -192,7 +237,7 @@ public class ApplicationService {
             document.fields.put(entry.getKey(), new ExtractedField(entry.getKey(), entry.getValue(), entry.getValue() == null ? "NOT_RECOGNIZED" : "RECOGNIZED", previous == null ? null : previous.confidence(), previous == null ? null : previous.source(), true, original, specialist, now));
             journal(state, documentId, "FIELD_CHANGED", "Исправлено поле «" + entry.getKey() + "»", specialist, "SPECIALIST", null, null);
         }
-        state.report = null;
+        invalidateReport(state);
         return document.view();
     }
 
@@ -202,7 +247,8 @@ public class ApplicationService {
         if (!"FAILED".equals(document.processingStatus)) throw error(HttpStatus.CONFLICT, "Повторная обработка доступна только после ошибки");
         document.processingStatus = "UPLOADED";
         document.processingError = null;
-        state.report = null;
+        invalidateReport(state);
+        journal(state, documentId, "DOCUMENT_REPROCESS_REQUESTED", "Запрошена повторная обработка документа", "Система", "SYSTEM", "UPLOADED", null);
         var response = document.view();
         enqueue(state, document);
         return response;
@@ -216,53 +262,21 @@ public class ApplicationService {
     }
 
     private CheckReport buildReport(ApplicationState state) {
-        var findings = new ArrayList<Finding>();
-        var completeness = REQUIRED.stream().map(type -> {
-            var ids = state.documents.values().stream().filter(document -> document.type == type).map(document -> document.id).toList();
-            return new Completeness(type, ids.isEmpty() ? "MISSING" : "FOUND", "REQUIRED", ids, ids.isEmpty());
-        }).toList();
-        if (state.documents.values().stream().anyMatch(StoredDocument::processing)) return new CheckReport("PROCESSING", Instant.now(), List.of(new Finding("DOCUMENT_PROCESSING", "Документы ещё обрабатываются. Проверка будет завершена после распознавания.", null, "INFO", null, null)), completeness);
-        for (DocumentType type : REQUIRED) {
-            long count = state.documents.values().stream().filter(document -> document.type == type).count();
-            if (count == 0) findings.add(new Finding("MISSING_DOCUMENT", "Отсутствует обязательный документ: " + typeTitle(type), type, "ERROR", null, null));
-            else if (count > 1) findings.add(new Finding("DUPLICATE_DOCUMENT", "Несколько документов одного типа: " + typeTitle(type), type, "WARNING", null, null));
-        }
+        var card = view(state);
+        var report = CheckEngine.check(settings.program(card.programCode()), card.documents(), settings.snapshot());
         for (var document : state.documents.values()) {
-            if ("FAILED".equals(document.processingStatus)) findings.add(new Finding("PROCESSING_FAILED", document.processingError, document.type, "WARNING", document.id, null));
-            for (var field : document.fields.values()) if (field.value() != null && field.confidence() != null && field.confidence() < 0.8 && !field.manuallyCorrected()) findings.add(new Finding("LOW_CONFIDENCE", "Требуется проверить распознавание поля «" + field.name() + "»", document.type, "WARNING", document.id, field.name()));
-        }
-        var application = firstApplication(state);
-        BigDecimal requested = number(application, "requested_amount");
-        if (requested == null) findings.add(new Finding("AMOUNT_NOT_RECOGNIZED", "Не удалось проверить: сумма субсидии не распознана", DocumentType.APPLICATION, "WARNING", application == null ? null : application.id, "requested_amount"));
-        else if (requested.signum() <= 0) findings.add(new Finding("INVALID_AMOUNT", "Сумма субсидии должна быть больше нуля", DocumentType.APPLICATION, "ERROR", application.id, "requested_amount"));
-        for (var document : state.documents.values()) {
-            if (document.type == DocumentType.COST_ESTIMATE || document.type == DocumentType.COST_JUSTIFICATION) checkArithmetic(document, findings);
-            if (document != application && document.fields.containsKey("requested_amount")) {
-                BigDecimal amount = number(document, "requested_amount");
-                if (requested == null || amount == null) findings.add(new Finding("AMOUNTS_NOT_CHECKED", "Не удалось сверить суммы между документами: сумма не распознана", document.type, "WARNING", document.id, "requested_amount"));
-                else findings.add(new Finding("AMOUNTS_MATCH", requested.compareTo(amount) == 0 ? "Сумма субсидии совпадает с заявлением" : "Сумма субсидии отличается от заявления", document.type, requested.compareTo(amount) == 0 ? "OK" : "ERROR", document.id, "requested_amount"));
+            if (!"DONE".equals(document.processingStatus) || document.type == null || document.type == DocumentType.UNKNOWN) {
+                document.outcome = "FAILED".equals(document.processingStatus) ? "ERRORS" : "ATTENTION";
+                continue;
             }
+            if ("PROCESSING".equals(report.status())) { document.outcome = null; continue; }
+            var related = report.findings().stream().filter(finding -> document.id.equals(finding.documentId())
+                    || (finding.documentId() == null && (finding.documentType() == null || finding.documentType() == document.type))).toList();
+            document.outcome = related.stream().anyMatch(finding -> "ERROR".equals(finding.severity())) ? "ERRORS"
+                    : related.stream().anyMatch(finding -> "WARNING".equals(finding.severity())) ? "ATTENTION" : "PASSED";
         }
-        findings.add(new Finding("MANUAL_REVIEW_REQUIRED", "Подписи и соответствие регламенту требуют проверки специалистом", null, "INFO", null, null));
-        boolean missing = findings.stream().anyMatch(finding -> "MISSING_DOCUMENT".equals(finding.code()));
-        boolean errors = findings.stream().anyMatch(finding -> "ERROR".equals(finding.severity()));
-        return new CheckReport(missing ? "INCOMPLETE" : errors ? "ERRORS" : "REVIEW_REQUIRED", Instant.now(), List.copyOf(findings), completeness);
+        return report;
     }
-
-    private static void checkArithmetic(StoredDocument document, List<Finding> findings) {
-        BigDecimal total = number(document, "total_expenses"), own = number(document, "own_funds"), subsidy = number(document, "requested_amount");
-        if (total == null || own == null || subsidy == null) {
-            findings.add(new Finding("ARITHMETIC_NOT_CHECKED", "Не удалось проверить арифметику: общие затраты, собственные средства или сумма субсидии не распознаны", document.type, "WARNING", document.id, "total_expenses"));
-            return;
-        }
-        boolean equal = own.add(subsidy).compareTo(total) == 0;
-        findings.add(new Finding("EXPENSES_SUM", equal ? "Собственные средства и субсидия совпадают с общими затратами" : "Сумма собственных средств и субсидии не совпадает с общими затратами", document.type, equal ? "OK" : "ERROR", document.id, "total_expenses"));
-        if (total.signum() > 0 && own.signum() >= 0 && own.compareTo(total) <= 0) {
-            String share = own.multiply(new BigDecimal("100")).divide(total, 2, java.math.RoundingMode.HALF_UP).toPlainString();
-            findings.add(new Finding("OWN_FUNDS_SHARE", "Доля собственных средств: " + share + "%", document.type, "INFO", document.id, "own_funds"));
-        } else findings.add(new Finding("INVALID_OWN_FUNDS", "Собственные средства или общие затраты указаны некорректно", document.type, "ERROR", document.id, "own_funds"));
-    }
-
     private static BigDecimal number(StoredDocument document, String field) {
         var value = document == null ? null : document.fields.get(field);
         return value != null && "RECOGNIZED".equals(value.status()) && value.value() instanceof BigDecimal number ? number : null;
@@ -296,10 +310,10 @@ public class ApplicationService {
             if (program == null && "Инновационный проект".equalsIgnoreCase(text(application, "program_name"))) program = "INNOVATION";
             detected = program != null;
         }
-        String programName = detected ? text(application, "program_name") : null;
-        if (programName == null && "INNOVATION".equals(program)) programName = "Инновационный проект";
+        String programName = settings.program(program) == null ? null : settings.program(program).name();
+        if (programName == null && detected) programName = text(application, "program_name");
         return new ApplicationView(state.id, text(application, "company_name"), text(application, "inn"), text(application, "project_name"), number(application, "requested_amount"), state.createdAt,
-                state.documents.values().stream().map(StoredDocument::view).toList(), state.report, program, programName, detected, requisites);
+                state.documents.values().stream().map(StoredDocument::view).toList(), state.report, program, programName, detected, requisites, state.decision);
     }
 
     private static String text(StoredDocument document, String name) {
@@ -332,7 +346,7 @@ public class ApplicationService {
         final Instant uploadedAt;
         DocumentType type, detectedType;
         Double confidence;
-        String typeSource, typeChangedBy, processingStatus = "UPLOADED", processingError;
+        String typeSource, typeChangedBy, processingStatus = "UPLOADED", processingError, outcome;
         Instant typeChangedAt;
         long revision;
         final Map<String, ExtractedField> fields = new LinkedHashMap<>();
@@ -341,7 +355,7 @@ public class ApplicationService {
             if (type != null) typeSource = "SPECIALIST";
         }
         boolean processing() { return !Set.of("DONE", "FAILED").contains(processingStatus); }
-        DocumentView view() { return new DocumentView(id, type, filename, content.length, uploadedAt, processingStatus, processingError, detectedType, confidence, typeSource, typeChangedBy, typeChangedAt, List.copyOf(fields.values())); }
+        DocumentView view() { return new DocumentView(id, type, filename, content.length, uploadedAt, processingStatus, processingError, detectedType, confidence, typeSource, typeChangedBy, typeChangedAt, List.copyOf(fields.values()), outcome); }
     }
     private static final class ApplicationState {
         final UUID id;
@@ -350,6 +364,7 @@ public class ApplicationService {
         final Map<UUID, StoredDocument> documents = new LinkedHashMap<>();
         final List<JournalEntry> journal = new ArrayList<>();
         CheckReport report;
+        Decision decision;
         ApplicationState(UUID id, String programCode, Instant createdAt) { this.id = id; this.programCode = programCode; this.createdAt = createdAt; }
     }
 }

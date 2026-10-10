@@ -16,9 +16,11 @@ import static org.example.subsidy.Models.*;
 @RequestMapping("/api/v1")
 public class ApplicationController {
     private final ApplicationService service;
+    private final PreviewService previews;
 
-    public ApplicationController(ApplicationService service) {
+    public ApplicationController(ApplicationService service, PreviewService previews) {
         this.service = service;
+        this.previews = previews;
     }
 
     @GetMapping("/document-types")
@@ -63,6 +65,7 @@ public class ApplicationController {
     @DeleteMapping("/applications/{id}/documents/{documentId}")
     public ResponseEntity<Void> deleteDocument(@PathVariable UUID id, @PathVariable UUID documentId) {
         service.deleteDocument(id, documentId);
+        previews.delete(documentId);
         return ResponseEntity.noContent().build();
     }
 
@@ -85,5 +88,21 @@ public class ApplicationController {
     @GetMapping("/applications/{id}/journal")
     public List<JournalEntry> journal(@PathVariable UUID id) {
         return service.journal(id);
+    }
+
+    @PostMapping("/applications/{id}/decision")
+    public ApplicationView decision(@PathVariable UUID id, @Valid @RequestBody DecisionRequest request, Principal principal) {
+        return service.decide(id, request, principal == null ? null : principal.getName());
+    }
+
+    @GetMapping("/applications/{id}/documents/{documentId}/preview")
+    public ResponseEntity<byte[]> preview(@PathVariable UUID id, @PathVariable UUID documentId) {
+        var document = service.document(id, documentId);
+        var preview = previews.request(documentId, document.filename(), () -> service.download(id, documentId));
+        if (!preview.ready()) return ResponseEntity.accepted().header("Retry-After", "3").build();
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("text/html;charset=UTF-8"))
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+                .header("Cache-Control", "no-store").body(preview.html());
     }
 }

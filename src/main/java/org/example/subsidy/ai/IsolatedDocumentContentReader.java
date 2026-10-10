@@ -33,7 +33,7 @@ public final class IsolatedDocumentContentReader
     private static final long TIMEOUT_SECONDS = 30;
 
     private static final Set<String> FORMATS = Set.of(
-            "pdf", "docx", "txt", "png", "jpg", "jpeg"
+            "pdf", "doc", "docx", "xls", "xlsx", "txt", "png", "jpg", "jpeg"
     );
 
     private static final Set<String> ENVIRONMENT = Set.of(
@@ -47,6 +47,14 @@ public final class IsolatedDocumentContentReader
             byte[] data,
             String filename
     ) throws IOException {
+        return readInternal(data, filename, false);
+    }
+
+    public byte[] preview(byte[] data, String filename) throws IOException {
+        return readInternal(data, filename, true).text().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private DocumentContent readInternal(byte[] data, String filename, boolean preview) throws IOException {
 
         if (data == null || data.length == 0) {
             throw new IOException("Empty document");
@@ -88,7 +96,7 @@ public final class IsolatedDocumentContentReader
                             directory,
                             input,
                             output,
-                            extension
+                            extension, preview
                     )
             );
 
@@ -143,7 +151,7 @@ public final class IsolatedDocumentContentReader
                 );
             }
 
-            return readResult(output);
+            return readResult(output, preview);
 
         } catch (InterruptedException e) {
 
@@ -175,7 +183,7 @@ public final class IsolatedDocumentContentReader
             Path directory,
             Path input,
             Path output,
-            String extension
+            String extension, boolean preview
     ) {
 
         boolean windows = System.getProperty("os.name")
@@ -215,7 +223,7 @@ public final class IsolatedDocumentContentReader
             command.add("org.example.Main");
         }
 
-        command.add("--ai-parser-worker");
+        command.add(preview ? "--office-preview-worker" : "--ai-parser-worker");
         command.add(input.toString());
         command.add(output.toString());
         command.add(extension);
@@ -223,7 +231,7 @@ public final class IsolatedDocumentContentReader
         return command;
     }
 
-    private static DocumentContent  readResult(Path file)
+    private static DocumentContent  readResult(Path file, boolean preview)
             throws IOException {
 
         if (!Files.isRegularFile(file)
@@ -246,7 +254,7 @@ public final class IsolatedDocumentContentReader
             }
 
             String text = new String(
-                    readBytes(input, MAX_TEXT_BYTES),
+                    readBytes(input, preview ? 4 * 1024 * 1024 : MAX_TEXT_BYTES),
                     StandardCharsets.UTF_8
             );
 
