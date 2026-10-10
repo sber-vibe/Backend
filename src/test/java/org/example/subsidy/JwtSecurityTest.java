@@ -110,6 +110,25 @@ class JwtSecurityTest {
     }
 
     @Test
+    void renewedTokenAndThirtySecondClockSkewAreSupportedWithoutServerSession() throws Exception {
+        String first = token(KEY, claims().id("first-access-token").build());
+        String renewed = token(KEY, claims().id("refreshed-access-token").expiresAt(Instant.now().plusSeconds(900)).build());
+        assertEquals(200, get("/api/v1/applications", first).statusCode());
+        var refresh = get("/api/v1/applications", renewed);
+        assertEquals(200, refresh.statusCode());
+        assertTrue(refresh.headers().allValues("Set-Cookie").isEmpty());
+        assertEquals(200, get("/api/v1/applications", token(KEY, claims().issuedAt(Instant.now().minusSeconds(100)).expiresAt(Instant.now().minusSeconds(20)).build())).statusCode());
+        assertEquals(401, get("/api/v1/applications", token(KEY, claims().issuedAt(Instant.now().minusSeconds(100)).expiresAt(Instant.now().minusSeconds(40)).build())).statusCode());
+        assertEquals(200, get("/api/v1/applications", token(KEY, claims().notBefore(Instant.now().plusSeconds(20)).build())).statusCode());
+        assertEquals(401, get("/api/v1/applications", token(KEY, claims().notBefore(Instant.now().plusSeconds(40)).build())).statusCode());
+        var forbidden = get("/api/v1/applications", token(KEY, claims().claim("realm_access", Map.of("roles", List.of())).build()));
+        assertEquals(403, forbidden.statusCode());
+        var json = tools.jackson.databind.json.JsonMapper.builder().build();
+        assertEquals("Недостаточно прав для этой операции", json.readTree(forbidden.body()).get("detail").asString());
+        assertNotNull(json.readTree(get("/api/v1/applications", null).body()).get("detail"));
+    }
+
+    @Test
     void healthIsPublic() throws Exception {
         assertEquals(200, get("/actuator/health", null).statusCode());
     }

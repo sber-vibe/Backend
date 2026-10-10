@@ -47,6 +47,10 @@ docker run --rm -p 8080:8080 subsidy-backend
 | `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES` | `subsidy-backend` |
 
 Проверяются подпись, срок действия, issuer и audience. Без токена — `401`, без нужной роли — `403`, оба в формате Problem Details.
+Проверка `exp`/`nbf` допускает расхождение часов до 30 секунд. Каждый действующий access token,
+включая выпущенный через refresh token, проверяется независимо; серверная сессия и привязка к значению
+токена отсутствуют. Продление frontend выполняет напрямую в Keycloak. При заданном JWKS необходимо
+задать issuer; audience по умолчанию `subsidy-backend`. Ошибки `401`/`403` содержат русский `detail`.
 `/actuator/health` и `/actuator/info` открыты. Если JWKS не задан, API открыт (демо-режим, как раньше).
 
 При настроенном Keycloak AI API также требует JWT с подходящей ролью и ключ `X-Api-Key`.
