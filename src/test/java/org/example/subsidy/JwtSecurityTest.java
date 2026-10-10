@@ -91,6 +91,34 @@ class JwtSecurityTest {
         assertEquals(200, get("/actuator/health", null).statusCode());
     }
 
+    @Test
+    void correctionActorComesFromVerifiedToken() throws Exception {
+        String jwt = token(KEY, claims().claim("preferred_username", "anna").build());
+        String base = "http://localhost:" + port;
+        var created = client.send(HttpRequest.newBuilder(URI.create(base + "/api/v1/applications"))
+                .header("Authorization", "Bearer " + jwt).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(201, created.statusCode());
+        String appPath = created.headers().firstValue("Location").orElseThrow();
+        String boundary = "jwt-correction-boundary";
+        String multipart = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\nAPPLICATION\r\n--" + boundary
+                + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\ntest\r\n--" + boundary + "--\r\n";
+        var upload = client.send(HttpRequest.newBuilder(URI.create(base + appPath + "/documents"))
+                .header("Authorization", "Bearer " + jwt).header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofString(multipart)).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(201, upload.statusCode());
+        String docPath = upload.headers().firstValue("Location").orElseThrow();
+        var patch = client.send(HttpRequest.newBuilder(URI.create(base + docPath))
+                .header("Authorization", "Bearer " + jwt).header("Content-Type", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString("{\"fields\":[{\"name\":\"inn\",\"value\":\"6161234567\"}],\"correctedBy\":\"forged\"}"))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, patch.statusCode());
+        assertTrue(patch.body().contains("\"correctedBy\":\"anna\""));
+        assertFalse(patch.body().contains("forged"));
+        var journal = get(appPath + "/journal", jwt);
+        assertTrue(journal.body().contains("\"actor\":\"anna\""));
+    }
+
     private HttpResponse<String> get(String path, String token) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).GET();
         if (token != null) request.header("Authorization", "Bearer " + token);

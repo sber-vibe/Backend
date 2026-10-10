@@ -8,11 +8,11 @@ import org.springframework.web.server.ResponseStatusException;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ApplicationServiceTest {
-    private final ApplicationService service = new ApplicationService();
+    private final ApplicationService service = new ApplicationService(
+            (content, filename) -> new DocumentRecognizer.Recognition(DocumentType.UNKNOWN, null, java.util.List.of()), Runnable::run);
 
     private UUID create() {
-        return service.create(new Models.CreateApplication("Компания", "6161000000", "Проект",
-                new BigDecimal("100000"))).id();
+        return service.create(new Models.CreateApplication(null)).id();
     }
 
     private MockMultipartFile file(String filename) {

@@ -102,6 +102,22 @@ public class AiAnalysisService {
         }
     }
 
+    /** Application jobs wait for the shared GPU slot instead of failing with "busy". */
+    public String recognizeDocument(byte[] data, String filename) throws IOException, InterruptedException {
+        gpuSlot.acquire();
+        try {
+            var content = reader.read(data, filename);
+            return aiClient.analyzeDocumentContent(content.text(), content.images());
+        } catch (ResourceAccessException exception) {
+            throw new ResponseStatusException(isTimeout(exception) ? HttpStatus.GATEWAY_TIMEOUT : HttpStatus.SERVICE_UNAVAILABLE,
+                    isTimeout(exception) ? "Модель не ответила в отведённое время" : "Модель недоступна", exception);
+        } catch (RestClientException | IllegalStateException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Некорректный ответ модели", exception);
+        } finally {
+            gpuSlot.release();
+        }
+    }
+
     private static boolean isTimeout(Throwable error) {
 
         Throwable current = error;

@@ -37,7 +37,7 @@ class ApplicationApiTest {
     @Test
     void invalidApplicationIsRejected() throws Exception {
         var response = create("""
-                {"applicantName":"","inn":"123","projectName":"Demo","requestedAmount":-1}
+                {"programCode": []}
                 """);
         assertEquals(400, response.statusCode());
         assertTrue(response.headers().firstValue("Content-Type").orElse("").contains("application/problem+json"));

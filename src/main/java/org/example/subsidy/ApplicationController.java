@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
+import java.security.Principal;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -22,8 +23,11 @@ public class ApplicationController {
 
     @GetMapping("/document-types")
     public List<DocumentType> documentTypes() {
-        return service.requiredTypes();
+        return service.documentTypes();
     }
+
+    @GetMapping("/programs")
+    public List<Program> programs() { return service.programs(); }
 
     @PostMapping("/applications")
     public ResponseEntity<ApplicationView> create(@Valid @RequestBody CreateApplication request) {
@@ -42,7 +46,7 @@ public class ApplicationController {
     }
 
     @PostMapping(value = "/applications/{id}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<DocumentView> upload(@PathVariable UUID id, @RequestParam DocumentType type,
+    public ResponseEntity<DocumentView> upload(@PathVariable UUID id, @RequestParam(required = false) DocumentType type,
                                               @RequestParam MultipartFile file) throws IOException {
         var document = service.upload(id, type, file);
         return ResponseEntity.created(URI.create("/api/v1/applications/" + id + "/documents/" + document.id()))
@@ -65,5 +69,21 @@ public class ApplicationController {
     @PostMapping("/applications/{id}/check")
     public CheckReport check(@PathVariable UUID id) {
         return service.check(id);
+    }
+
+    @PatchMapping("/applications/{id}/documents/{documentId}")
+    public DocumentView patch(@PathVariable UUID id, @PathVariable UUID documentId,
+                              @Valid @RequestBody DocumentPatch patch, Principal principal) {
+        return service.patch(id, documentId, patch, principal == null ? null : principal.getName());
+    }
+
+    @PostMapping("/applications/{id}/documents/{documentId}/reprocess")
+    public DocumentView reprocess(@PathVariable UUID id, @PathVariable UUID documentId) {
+        return service.reprocess(id, documentId);
+    }
+
+    @GetMapping("/applications/{id}/journal")
+    public List<JournalEntry> journal(@PathVariable UUID id) {
+        return service.journal(id);
     }
 }
