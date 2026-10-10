@@ -7,9 +7,11 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -21,6 +23,15 @@ final class AiChunkAnalyzer {
 
     private static final int CHUNK_SIZE = 4000;
     private static final int MAX_CHUNKS = 40;
+
+    private static final Set<String> AMOUNT_FIELDS = Set.of(
+            "requested_amount", "total_expenses",
+            "own_funds", "guarantee_amount"
+    );
+
+    private static final Set<String> DATE_FIELDS = Set.of(
+            "document_date", "issue_date", "valid_until"
+    );
 
     private static final String MONEY =
             "(?:\\d{1,3}(?:[ \\t\\u00A0\\u202F]\\d{3})+|\\d+)[,.]\\d{2}";
@@ -48,7 +59,10 @@ final class AiChunkAnalyzer {
             DocumentContent content,
             VisionAnalysisClient client
     ) {
-        List<String> chunks = splitText(content.text());
+        String text = content.text() == null
+                ? "" : content.text();
+
+        List<String> chunks = splitText(text);
 
         if (chunks.size() > MAX_CHUNKS) {
             throw new IllegalStateException(
@@ -57,13 +71,13 @@ final class AiChunkAnalyzer {
         }
 
         List<byte[]> primaryImages =
-                content.text().isBlank()
-                        || content.text().contains(": изображение №")
+                text.isBlank()
+                        || text.contains(": изображение №")
                         ? content.images()
                         : List.of();
 
         String type = client.classifyDocument(
-                classificationExcerpt(content.text()),
+                classificationExcerpt(text),
                 primaryImages
         );
 
@@ -73,16 +87,24 @@ final class AiChunkAnalyzer {
             );
         }
 
-        List<String> fields = AiDocumentContract.fieldsFor(type);
+        List<String> fields =
+                AiDocumentContract.fieldsFor(type);
 
-        ObjectNode merged = JSON.createObjectNode();
-        merged.put(AiDocumentContract.DOCUMENT_TYPE, type);
+        Map<String, List<Observation>> observations =
+                new LinkedHashMap<>();
 
         for (String field : fields) {
-            merged.put(field, "");
+            if (!field.equals(AiDocumentContract.ACCOUNTS)) {
+                observations.put(field, new ArrayList<>());
+            }
         }
 
-        Set<String> uncertainFields = new LinkedHashSet<>();
+        ArrayNode accounts = JSON.createArrayNode();
+
+        Set<String> missingUncertain =
+                new LinkedHashSet<>();
+
+        boolean accountsUncertain = false;
 
         if (!type.equals(AiDocumentContract.UNKNOWN)) {
 
@@ -116,7 +138,65 @@ final class AiChunkAnalyzer {
                     );
                 }
 
+                JsonNode uncertainNode = response.get(
+                        AiDocumentContract.UNCERTAIN_FIELDS
+                );
+
+                if (uncertainNode == null
+                        || !uncertainNode.isArray()) {
+                    throw new IllegalStateException(
+                            "Invalid uncertain fields"
+                    );
+                }
+
+                Set<String> chunkUncertain =
+                        new LinkedHashSet<>();
+
+                for (JsonNode item : uncertainNode) {
+
+                    if (!item.isString()
+                            || !fields.contains(item.asString())) {
+                        throw new IllegalStateException(
+                                "Invalid uncertain field name"
+                        );
+                    }
+
+                    chunkUncertain.add(item.asString());
+                }
+
                 for (String field : fields) {
+
+                    if (field.equals(AiDocumentContract.ACCOUNTS)) {
+
+                        JsonNode rawAccounts = response.get(field);
+
+                        if (rawAccounts == null
+                                || !rawAccounts.isArray()
+                                || rawAccounts.size() > 30) {
+                            throw new IllegalStateException(
+                                    "Invalid accounts array"
+                            );
+                        }
+
+                        for (JsonNode account : rawAccounts) {
+
+                            if (!validAccount(account)) {
+                                throw new IllegalStateException(
+                                        "Invalid bank account entry"
+                                );
+                            }
+
+                            if (mergeAccount(accounts, account)) {
+                                accountsUncertain = true;
+                            }
+                        }
+
+                        if (chunkUncertain.contains(field)) {
+                            accountsUncertain = true;
+                        }
+
+                        continue;
+                    }
 
                     JsonNode node = response.get(field);
 
@@ -129,65 +209,134 @@ final class AiChunkAnalyzer {
                     String value = node.asString().strip();
 
                     if (value.isEmpty()) {
-                        continue;
-                    }
 
-                    String previous = merged.get(field).asString();
+                        if (chunkUncertain.contains(field)) {
+                            missingUncertain.add(field);
+                        }
 
-                    if (previous.isEmpty()) {
-                        merged.put(field, value);
-                    } else if (!sameValue(previous, value)) {
-                        uncertainFields.add(field);
-                    }
-                }
+                    } else {
 
-                JsonNode uncertain = response.get(
-                        AiDocumentContract.UNCERTAIN_FIELDS
-                );
-
-                if (uncertain == null || !uncertain.isArray()) {
-                    throw new IllegalStateException(
-                            "Invalid uncertain fields"
-                    );
-                }
-
-                for (JsonNode item : uncertain) {
-
-                    if (!item.isString()
-                            || !fields.contains(item.asString())) {
-                        throw new IllegalStateException(
-                                "Invalid uncertain field name"
+                        observations.get(field).add(
+                                new Observation(
+                                        value,
+                                        chunkUncertain.contains(field)
+                                )
                         );
                     }
-
-                    uncertainFields.add(item.asString());
                 }
+            }
+        }
+
+        ObjectNode merged = JSON.createObjectNode();
+
+        merged.put(AiDocumentContract.DOCUMENT_TYPE, type);
+
+        Set<String> uncertainFields =
+                new LinkedHashSet<>();
+
+        for (String field : fields) {
+
+            if (field.equals(AiDocumentContract.ACCOUNTS)) {
+
+                merged.set(field, accounts);
+
+                if (accountsUncertain) {
+                    uncertainFields.add(field);
+                }
+
+                continue;
+            }
+
+            List<Variant> variants = new ArrayList<>();
+
+            for (Observation observation :
+                    observations.get(field)) {
+
+                Variant matched = null;
+
+                for (Variant variant : variants) {
+
+                    if (sameValue(
+                            field,
+                            variant.value,
+                            observation.value()
+                    )) {
+                        matched = variant;
+                        break;
+                    }
+                }
+
+                if (matched == null) {
+                    matched = new Variant(observation.value());
+                    variants.add(matched);
+                }
+
+                matched.total++;
+
+                if (!observation.uncertain()) {
+                    matched.confident++;
+                }
+            }
+
+            if (variants.isEmpty()) {
+
+                merged.put(field, "");
+
+                if (missingUncertain.contains(field)
+                        && AiDocumentContract.requiredFor(type)
+                        .contains(field)) {
+                    uncertainFields.add(field);
+                }
+
+                continue;
+            }
+
+            Variant best = variants.get(0);
+
+            for (Variant variant : variants) {
+
+                if (variant.confident > best.confident
+                        || (variant.confident == best.confident
+                        && variant.total > best.total)) {
+                    best = variant;
+                }
+            }
+
+            merged.put(field, best.value);
+
+            if (variants.size() > 1
+                    || best.confident == 0) {
+                uncertainFields.add(field);
             }
         }
 
         if (type.equals(AiDocumentContract.APPLICATION)) {
 
-            String tableAmount = requestedAmountFromTable(
-                    content.text()
-            );
+            String tableAmount = requestedAmountFromTable(text);
 
             if (!tableAmount.isBlank()) {
 
-                String previous = merged.get(
-                        "requested_amount"
-                ).asString();
-
-                if (!previous.isBlank()
-                        && !sameValue(previous, tableAmount)) {
-                    uncertainFields.add("requested_amount");
-                }
+                boolean conflict = observations
+                        .get("requested_amount")
+                        .stream()
+                        .anyMatch(observation -> !sameValue(
+                                "requested_amount",
+                                observation.value(),
+                                tableAmount
+                        ));
 
                 merged.put("requested_amount", tableAmount);
+
+                if (conflict) {
+                    uncertainFields.add("requested_amount");
+                } else {
+                    uncertainFields.remove("requested_amount");
+                }
 
             } else if (merged.get("requested_amount")
                     .asString().isBlank()) {
 
-                String context = amountContext(content.text());
+                String context = amountContext(text);
 
                 if (!context.isBlank()
                         || !content.images().isEmpty()) {
@@ -217,6 +366,128 @@ final class AiChunkAnalyzer {
         return JSON.writeValueAsString(merged);
     }
 
+    private static boolean validAccount(JsonNode account) {
+
+        return account != null
+                && account.isObject()
+                && account.size() == 2
+                && account.has("account_number")
+                && account.get("account_number").isString()
+                && account.has("account_balance")
+                && account.get("account_balance").isString();
+    }
+
+    private static boolean mergeAccount(
+            ArrayNode accounts,
+            JsonNode account
+    ) {
+        String number = account.get(
+                "account_number"
+        ).asString().strip();
+
+        String balance = account.get(
+                "account_balance"
+        ).asString().strip();
+
+        if (number.isEmpty() && balance.isEmpty()) {
+            return false;
+        }
+
+        if (!number.isEmpty()) {
+
+            for (JsonNode existing : accounts) {
+
+                String existingNumber = existing.get(
+                        "account_number"
+                ).asString();
+
+                if (!number.equals(existingNumber)) {
+                    continue;
+                }
+
+                String existingBalance = existing.get(
+                        "account_balance"
+                ).asString();
+
+                if (existingBalance.isEmpty()
+                        && !balance.isEmpty()) {
+
+                    ((ObjectNode) existing).put(
+                            "account_balance",
+                            balance
+                    );
+
+                    return false;
+                }
+
+                return !existingBalance.isEmpty()
+                        && !balance.isEmpty()
+                        && !sameValue(
+                        "account_balance",
+                        existingBalance,
+                        balance
+                );
+            }
+        }
+
+        ObjectNode result = accounts.addObject();
+
+        result.put("account_number", number);
+        result.put("account_balance", balance);
+
+        return number.isEmpty() || balance.isEmpty();
+    }
+
+    private record Observation(
+            String value,
+            boolean uncertain
+    ) {
+    }
+
+    private static final class Variant {
+
+        private final String value;
+        private int total;
+        private int confident;
+
+        private Variant(String value) {
+            this.value = value;
+        }
+    }
+
+    private static boolean sameValue(
+            String field,
+            String first,
+            String second
+    ) {
+        if (AMOUNT_FIELDS.contains(field)
+                || field.equals("account_balance")) {
+
+            var left = DocumentFieldChecks.parseAmount(first);
+            var right = DocumentFieldChecks.parseAmount(second);
+
+            if (left.isPresent() && right.isPresent()) {
+                return left.get().compareTo(right.get()) == 0;
+            }
+        }
+
+        if (DATE_FIELDS.contains(field)) {
+
+            var left = DocumentFieldChecks.parseDate(first);
+            var right = DocumentFieldChecks.parseDate(second);
+
+            if (left.isPresent() && right.isPresent()) {
+                return left.get().isEqual(right.get());
+            }
+        }
+
+        return first.strip()
+                .replaceAll("\\s+", " ")
+                .equalsIgnoreCase(
+                        second.strip().replaceAll("\\s+", " ")
+                );
+    }
+
     static String requestedAmountFromTable(String text) {
 
         if (text == null || text.isBlank()) {
@@ -236,10 +507,14 @@ final class AiChunkAnalyzer {
                     .replace('\r', '\n')
                     .replaceAll("(?m)^\\h*\\n", "");
 
-            String lower = normalized.toLowerCase(Locale.ROOT);
+            String lower =
+                    normalized.toLowerCase(Locale.ROOT);
 
-            int cofinancing = lower.indexOf("софинансирован");
-            int requested = lower.indexOf("запрашиваемая сумма");
+            int cofinancing =
+                    lower.indexOf("софинансирован");
+
+            int requested =
+                    lower.indexOf("запрашиваемая сумма");
 
             if (cofinancing < 0
                     || requested < 0
@@ -270,7 +545,11 @@ final class AiChunkAnalyzer {
 
             if (selected.isBlank()) {
                 selected = candidate;
-            } else if (!sameValue(selected, candidate)) {
+            } else if (!sameValue(
+                    "requested_amount",
+                    selected,
+                    candidate
+            )) {
                 return "";
             }
         }
@@ -285,7 +564,9 @@ final class AiChunkAnalyzer {
             Pattern... patterns
     ) {
         String result = "";
-        int headerEnd = Math.max(requested, cofinancing);
+
+        int headerEnd =
+                Math.max(requested, cofinancing);
 
         for (Pattern pattern : patterns) {
 
@@ -300,40 +581,29 @@ final class AiChunkAnalyzer {
                 String first = matcher.group(1).strip();
                 String second = matcher.group(2).strip();
 
-                if (DocumentFieldChecks.parseAmount(first).isEmpty()
-                        || DocumentFieldChecks.parseAmount(second).isEmpty()) {
+                if (DocumentFieldChecks.parseAmount(first)
+                        .isEmpty()
+                        || DocumentFieldChecks.parseAmount(second)
+                        .isEmpty()) {
                     continue;
                 }
 
                 String candidate = requested < cofinancing
-                        ? first
-                        : second;
+                        ? first : second;
 
                 if (result.isBlank()) {
                     result = candidate;
-                } else if (!sameValue(result, candidate)) {
+                } else if (!sameValue(
+                        "requested_amount",
+                        result,
+                        candidate
+                )) {
                     return "";
                 }
             }
         }
 
         return result;
-    }
-
-    private static boolean sameValue(
-            String first,
-            String second
-    ) {
-        var firstAmount = DocumentFieldChecks.parseAmount(first);
-        var secondAmount = DocumentFieldChecks.parseAmount(second);
-
-        if (firstAmount.isPresent() && secondAmount.isPresent()) {
-            return firstAmount.get().compareTo(
-                    secondAmount.get()
-            ) == 0;
-        }
-
-        return first.equals(second);
     }
 
     static String classificationExcerpt(String text) {
@@ -369,12 +639,10 @@ final class AiChunkAnalyzer {
         int position = -1;
 
         for (String label : labels) {
-
-            int found = lower.lastIndexOf(label);
-
-            if (found > position) {
-                position = found;
-            }
+            position = Math.max(
+                    position,
+                    lower.lastIndexOf(label)
+            );
         }
 
         if (position < 0) {
@@ -415,7 +683,9 @@ final class AiChunkAnalyzer {
                 }
             }
 
-            String chunk = text.substring(start, end).strip();
+            String chunk = text.substring(
+                    start, end
+            ).strip();
 
             if (!chunk.isEmpty()) {
                 chunks.add(chunk);
