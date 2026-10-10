@@ -256,7 +256,7 @@ public class VisionAnalysisClient {
                 AiDocumentContract.GUARANTEE_LETTER
         )) {
             systemPrompt += """
-                    
+
                     Гарантом может быть ИП.
                     Ищи реквизиты субъекта перед фразами
                     "в лице" и "заявляет о своем намерении".
@@ -271,7 +271,7 @@ public class VisionAnalysisClient {
                 AiDocumentContract.BANK_STATEMENT
         )) {
             systemPrompt += """
-                    
+
                     Владелец счетов не является банком,
                     выдавшим документ.
 

@@ -17,6 +17,7 @@ public final class FieldValues {
         return switch (name) {
             case "organization", "organization_name" -> "company_name";
             case "document_date" -> "date";
+            case "account_balance" -> "balance";
             default -> name;
         };
     }
