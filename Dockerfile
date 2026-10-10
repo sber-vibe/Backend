@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon bootJar
 FROM eclipse-temurin:26-jre
 WORKDIR /app
 COPY --from=build /app/build/libs/backend.jar app.jar
+RUN mkdir -p /app/data && chown 10001:10001 /app/data
 USER 10001
 EXPOSE 8080
 # JVM берёт память от лимита контейнера, а не от памяти хоста

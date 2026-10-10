@@ -15,7 +15,8 @@ import tools.jackson.databind.json.JsonMapper;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real HTTP endpoints, parser subprocess and Ollama client, with a local model response fixture. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@org.springframework.test.context.ActiveProfiles("dev")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "storage.jdbc-url=jdbc:h2:mem:requisites-api;DB_CLOSE_DELAY=-1")
 class ApplicationRequisitesApiTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final HttpServer MODEL = startModel();
@@ -161,6 +162,10 @@ class ApplicationRequisitesApiTest {
             var original = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + docPath)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
             assertArrayEquals(content, original.body());
         }
+        long checkDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        while ("PROCESSING".equals(JSON.readTree(request(appPath + "/check", "POST", null).body()).get("status").asString())) {
+            if (System.nanoTime() > checkDeadline) fail("Check did not finish"); Thread.sleep(20);
+        }
         var decision = request(appPath + "/decision", "POST", "{\"decision\":\"RETURNED\",\"comment\":\"Дослать документы\"}");
         assertEquals(200, decision.statusCode());
         assertEquals("RETURNED", JSON.readTree(request(appPath, "GET", null).body()).get("decision").get("decision").asString());
@@ -170,7 +175,7 @@ class ApplicationRequisitesApiTest {
 
     @Test
     void adminProgramCrudAndValidationWorkThroughHttp() throws Exception {
-        var body = "{\"code\":\"HTTP_TEST\",\"name\":\"Программа\",\"active\":true,\"documents\":[{\"type\":\"APPLICATION\",\"requirement\":\"REQUIRED\"}]}";
+        var body = "{\"code\":\"HTTP_TEST\",\"name\":\"Программа\",\"active\":true,\"version\":1,\"documents\":[{\"type\":\"APPLICATION\",\"requirement\":\"REQUIRED\"}]}";
         assertEquals(201, request("/api/v1/admin/programs", "POST", body).statusCode());
         assertTrue(request("/api/v1/programs", "GET", null).body().contains("HTTP_TEST"));
         assertEquals(200, request("/api/v1/admin/programs/HTTP_TEST", "PUT", body.replace("\"active\":true", "\"active\":false")).statusCode());

@@ -15,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -59,7 +60,7 @@ public class SecurityConfig {
 
     @Bean
     @ConditionalOnProperty(JWK_SET_URI)
-    SecurityFilterChain jwtSecurity(HttpSecurity http) throws Exception {
+    SecurityFilterChain jwtSecurity(HttpSecurity http, CheckSettings settings) throws Exception {
         var bearerEntryPoint = new BearerTokenAuthenticationEntryPoint();
         var bearerAccessDenied = new BearerTokenAccessDeniedHandler();
         return stateless(http)
@@ -67,16 +68,23 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("admin")
-                        .requestMatchers("/api/**").hasAnyRole(API_ROLES)
+                        .requestMatchers("/api/v1/document-types", "/api/v1/application-attributes", "/api/v1/programs").hasAnyRole(API_ROLES)
+                        .requestMatchers("/api/v1/applications", "/api/v1/applications/**", "/api/v1/ai/**").hasRole("specialist")
+                        .requestMatchers("/api/**").denyAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(keycloakAuthenticationConverter()))
                         // заголовок WWW-Authenticate от Spring + тело в формате Problem Details, как у остального API
                         .authenticationEntryPoint((request, response, exception) -> {
+                            settings.denied(null, "USER", request.getRequestURI(), "Токен отсутствует, недействителен или истёк");
                             bearerEntryPoint.commence(request, response, exception);
                             writeProblem(response, HttpStatus.UNAUTHORIZED);
                         })
                         .accessDeniedHandler((request, response, exception) -> {
+                            var actor = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+                            String type = actor.getAuthorities().stream().anyMatch(role -> "ROLE_specialist".equals(role.getAuthority())) ? "SPECIALIST"
+                                    : actor.getAuthorities().stream().anyMatch(role -> "ROLE_admin".equals(role.getAuthority())) ? "ADMIN" : "USER";
+                            settings.denied(actor.getName(), type, request.getRequestURI());
                             bearerAccessDenied.handle(request, response, exception);
                             writeProblem(response, HttpStatus.FORBIDDEN);
                         }))
@@ -84,9 +92,22 @@ public class SecurityConfig {
     }
 
     @Bean
+    @Profile("dev")
     @ConditionalOnExpression("'${" + JWK_SET_URI + ":}' == ''")
     SecurityFilterChain openSecurity(HttpSecurity http) throws Exception {
         return stateless(http).authorizeHttpRequests(auth -> auth.anyRequest().permitAll()).build();
+    }
+
+    @Bean
+    @Profile("!dev")
+    @ConditionalOnExpression("'${" + JWK_SET_URI + ":}' == ''")
+    SecurityFilterChain unconfiguredSecurity(HttpSecurity http) throws Exception {
+        return stateless(http).authorizeHttpRequests(auth -> auth
+                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                .anyRequest().denyAll()).exceptionHandling(errors -> errors
+                .authenticationEntryPoint((request, response, exception) -> writeProblem(response, HttpStatus.SERVICE_UNAVAILABLE))
+                .accessDeniedHandler((request, response, exception) -> writeProblem(response, HttpStatus.SERVICE_UNAVAILABLE))).build();
     }
 
     /** Keycloak кладёт роли realm в claim realm_access.roles; имя пользователя — в preferred_username. */
@@ -119,7 +140,8 @@ public class SecurityConfig {
         response.setStatus(status.value());
         response.setCharacterEncoding("UTF-8");
         response.setContentType("application/problem+json");
-        String detail = status == HttpStatus.UNAUTHORIZED ? "Требуется вход: токен отсутствует, недействителен или срок его действия истёк" : "Недостаточно прав для этой операции";
+        String detail = status == HttpStatus.SERVICE_UNAVAILABLE ? "Сервер авторизации не настроен. Обратитесь к администратору."
+                : status == HttpStatus.UNAUTHORIZED ? "Требуется вход: токен отсутствует, недействителен или срок его действия истёк" : "Недостаточно прав для этой операции";
         response.getWriter().write("{\"type\":\"about:blank\",\"title\":\"" + status.getReasonPhrase()
                 + "\",\"status\":" + status.value() + ",\"detail\":\"" + detail + "\"}");
     }

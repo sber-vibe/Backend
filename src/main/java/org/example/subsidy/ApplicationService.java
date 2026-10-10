@@ -19,11 +19,12 @@ public class ApplicationService {
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024;
     private static final long MAX_TOTAL_SIZE = 50 * 1024 * 1024;
     private static final List<String> REQUISITES = List.of("company_name", "inn", "kpp", "project_name", "requested_amount");
-    private static final EnumSet<DocumentType> REQUIRED = EnumSet.of(DocumentType.APPLICATION, DocumentType.REGISTRATION_EXTRACT, DocumentType.COST_ESTIMATE);
     private final Map<UUID, ApplicationState> applications = new LinkedHashMap<>();
     private final DocumentRecognizer recognizer;
     private final Executor processingQueue;
     private final CheckSettings settings;
+    private StateStore store;
+    private Snapshot committed;
     private final long processingTimeoutSeconds;
     private final ExecutorService modelWorkers = Executors.newFixedThreadPool(2, task -> {
         var thread = new Thread(task, "document-model-worker"); thread.setDaemon(true); return thread;
@@ -32,18 +33,22 @@ public class ApplicationService {
 
     @Autowired
     public ApplicationService(DocumentRecognizer recognizer, CheckSettings settings,
-                              @Value("${document.processing-timeout-seconds:240}") long timeout) {
+                              @Value("${document.processing-timeout-seconds:240}") long timeout, StateStore store) {
         this(recognizer, Executors.newSingleThreadExecutor(task -> {
             var thread = new Thread(task, "application-document-processing");
             thread.setDaemon(true);
             return thread;
         }), settings, timeout);
+        this.store = store;
+        restore();
     }
 
     ApplicationService(DocumentRecognizer recognizer, Executor processingQueue) {
         this(recognizer, processingQueue, new CheckSettings(), 240);
     }
-    ApplicationService(DocumentRecognizer recognizer) { this(recognizer, new CheckSettings(), 240); }
+    ApplicationService(DocumentRecognizer recognizer) {
+        this(recognizer, Executors.newSingleThreadExecutor(task -> { var thread = new Thread(task); thread.setDaemon(true); return thread; }), new CheckSettings(), 240);
+    }
 
     ApplicationService(DocumentRecognizer recognizer, Executor processingQueue, CheckSettings settings, long timeout) {
         this.recognizer = recognizer;
@@ -58,7 +63,7 @@ public class ApplicationService {
         modelWorkers.shutdownNow();
     }
 
-    public List<DocumentType> requiredTypes() { return List.copyOf(REQUIRED); }
+    public List<DocumentType> requiredTypes() { return settings.program("INNOVATION").documents().stream().filter(document -> "REQUIRED".equals(document.requirement())).map(ProgramDocument::type).toList(); }
     public List<DocumentType> documentTypes() { return Arrays.stream(DocumentType.values()).filter(type -> type != DocumentType.UNKNOWN).toList(); }
     public List<Program> programs() {
         return settings.programs(true);
@@ -71,6 +76,7 @@ public class ApplicationService {
         var state = new ApplicationState(UUID.randomUUID(), code, Instant.now());
         applications.put(state.id, state);
         journal(state, null, "APPLICATION_CREATED", "Создана заявка", "Система", "SYSTEM", null, null);
+        persist();
         return view(state);
     }
 
@@ -80,18 +86,35 @@ public class ApplicationService {
     public synchronized ApplicationView get(UUID id) { return view(require(id)); }
     public synchronized DocumentView document(UUID id, UUID documentId) { return requireDocument(require(id), documentId).view(); }
     public synchronized List<JournalEntry> journal(UUID id) { return List.copyOf(require(id).journal); }
-    public synchronized List<JournalEntry> allJournal(int limit) {
+    public synchronized List<JournalEntry> allJournal(int limit, Instant before, String action) {
         return applications.values().stream().flatMap(state -> state.journal.stream())
+                .filter(entry -> before == null || entry.at().isBefore(before)).filter(entry -> action == null || action.equals(entry.action()))
                 .sorted(Comparator.comparing(JournalEntry::at).reversed()).limit(Math.max(1, Math.min(limit, 1000))).toList();
     }
 
     public synchronized ApplicationView decide(UUID id, DecisionRequest request, String actor) {
         var state = require(id);
+        if (state.report == null || "PROCESSING".equals(state.report.status()) || state.documents.values().stream().anyMatch(StoredDocument::processing)) throw error(HttpStatus.CONFLICT, "Сначала дождитесь результата проверки");
         String comment = blankToNull(request.comment());
         if (request.decision() != DecisionCode.ACCEPTED && comment == null) throw error(HttpStatus.BAD_REQUEST, "Для возврата или отклонения укажите комментарий");
         String specialist = blankToNull(actor) == null ? "Специалист" : actor;
+        var previous = state.decision;
         state.decision = new Decision(request.decision(), comment, specialist, Instant.now());
-        journal(state, null, "DECISION_MADE", "Сохранено решение специалиста", specialist, "SPECIALIST", request.decision().name(), comment);
+        state.journal.add(new JournalEntry(UUID.randomUUID(), Instant.now(), specialist, "SPECIALIST", "DECISION_MADE", "Сохранено решение специалиста",
+                id, null, request.decision().name(), comment, previous, state.decision, null, "APPLICATION", id.toString()));
+        persist();
+        return view(state);
+    }
+
+    public synchronized ApplicationView patchApplication(UUID id, ApplicationPatch patch, String actor) {
+        var state = require(id);
+        for (String code : patch.attributes().keySet()) if (CheckSettings.ATTRIBUTES.stream().noneMatch(attribute -> attribute.code().equals(code))) throw error(HttpStatus.BAD_REQUEST, "Неизвестный признак проекта: " + code);
+        var before = new LinkedHashMap<>(state.attributes);
+        state.attributes.putAll(patch.attributes());
+        invalidateReport(state);
+        state.journal.add(new JournalEntry(UUID.randomUUID(), Instant.now(), actor == null ? "Специалист" : actor, "SPECIALIST", "APPLICATION_ATTRIBUTES_CHANGED",
+                "Изменены признаки проекта", id, null, "OK", null, before, new LinkedHashMap<>(state.attributes), null, "APPLICATION", id.toString()));
+        persist();
         return view(state);
     }
 
@@ -111,6 +134,7 @@ public class ApplicationService {
         invalidateReport(state);
         journal(state, document.id, "DOCUMENT_UPLOADED", "Загружен документ «" + filename + "»", "Система", "SYSTEM", "UPLOADED", null);
         var response = document.view();
+        persist();
         enqueue(state, document);
         return response;
     }
@@ -167,6 +191,7 @@ public class ApplicationService {
                 journal(state, documentId, "DOCUMENT_CLASSIFIED", "Определён тип документа «" + filename + "»", "Модель", "SYSTEM", "DONE", null);
                 journal(state, documentId, "FIELDS_EXTRACTED", "Извлечены реквизиты документа «" + filename + "»", "Модель", "SYSTEM", "DONE", null);
                 updatePendingReport(state);
+                persist();
             }
         } catch (Exception exception) {
             if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
@@ -178,6 +203,7 @@ public class ApplicationService {
                 var state = require(id);
                 journal(state, documentId, "PROCESSING_FAILED", "Не удалось обработать «" + filename + "»", "Система", "SYSTEM", "FAILED", document.processingError);
                 updatePendingReport(state);
+                persist();
             }
         }
     }
@@ -208,6 +234,7 @@ public class ApplicationService {
         storedBytes -= removed.content.length;
         invalidateReport(state);
         journal(state, documentId, "DOCUMENT_DELETED", "Удалён документ «" + removed.filename + "»", "Система", "SYSTEM", null, null);
+        persist();
     }
 
     public synchronized DocumentView patch(UUID id, UUID documentId, DocumentPatch patch, String actor) {
@@ -238,6 +265,7 @@ public class ApplicationService {
             journal(state, documentId, "FIELD_CHANGED", "Исправлено поле «" + entry.getKey() + "»", specialist, "SPECIALIST", null, null);
         }
         invalidateReport(state);
+        persist();
         return document.view();
     }
 
@@ -250,20 +278,26 @@ public class ApplicationService {
         invalidateReport(state);
         journal(state, documentId, "DOCUMENT_REPROCESS_REQUESTED", "Запрошена повторная обработка документа", "Система", "SYSTEM", "UPLOADED", null);
         var response = document.view();
+        persist();
         enqueue(state, document);
         return response;
     }
 
     public synchronized CheckReport check(UUID id) {
         var state = require(id);
+        var configuration = settings.configuration();
+        state.checkRules = configuration.rules();
+        state.checkPrograms = configuration.programs();
         state.report = buildReport(state);
         journal(state, null, "CHECK_COMPLETED", "Выполнена проверка пакета", "Система", "SYSTEM", state.report.status(), null);
+        persist();
         return state.report;
     }
 
     private CheckReport buildReport(ApplicationState state) {
         var card = view(state);
-        var report = CheckEngine.check(settings.program(card.programCode()), card.documents(), settings.snapshot());
+        var program = state.checkPrograms == null || card.programCode() == null ? settings.program(card.programCode()) : state.checkPrograms.get(card.programCode());
+        var report = CheckEngine.check(program, card.documents(), state.checkRules == null ? settings.snapshot() : state.checkRules, state.attributes);
         for (var document : state.documents.values()) {
             if (!"DONE".equals(document.processingStatus) || document.type == null || document.type == DocumentType.UNKNOWN) {
                 document.outcome = "FAILED".equals(document.processingStatus) ? "ERRORS" : "ATTENTION";
@@ -313,7 +347,8 @@ public class ApplicationService {
         String programName = settings.program(program) == null ? null : settings.program(program).name();
         if (programName == null && detected) programName = text(application, "program_name");
         return new ApplicationView(state.id, text(application, "company_name"), text(application, "inn"), text(application, "project_name"), number(application, "requested_amount"), state.createdAt,
-                state.documents.values().stream().map(StoredDocument::view).toList(), state.report, program, programName, detected, requisites, state.decision);
+                state.documents.values().stream().map(StoredDocument::view).toList(), state.report, program, programName, detected, requisites, state.decision,
+                Collections.unmodifiableMap(new LinkedHashMap<>(state.attributes)));
     }
 
     private static String text(StoredDocument document, String name) {
@@ -335,7 +370,6 @@ public class ApplicationService {
         return "Не удалось распознать документ. Повторите обработку или укажите значения вручную.";
     }
     private static void journal(ApplicationState state, UUID documentId, String action, String message, String actor, String actorType, String outcome, String reason) {
-        if (state.journal.size() >= 1000) state.journal.remove(0);
         state.journal.add(new JournalEntry(UUID.randomUUID(), Instant.now(), actor, actorType, action, message, state.id, documentId, outcome, reason));
     }
 
@@ -365,6 +399,56 @@ public class ApplicationService {
         final List<JournalEntry> journal = new ArrayList<>();
         CheckReport report;
         Decision decision;
+        final Map<String, Boolean> attributes = new LinkedHashMap<>();
+        Map<String, Rule> checkRules;
+        Map<String, Program> checkPrograms;
         ApplicationState(UUID id, String programCode, Instant createdAt) { this.id = id; this.programCode = programCode; this.createdAt = createdAt; }
+    }
+
+    public record SavedDocument(DocumentView document, byte[] content) { }
+    public record SavedApplication(UUID id, String programCode, Instant createdAt, List<SavedDocument> documents,
+            List<JournalEntry> journal, CheckReport report, Decision decision, Map<String, Boolean> attributes) { }
+    public record Snapshot(List<SavedApplication> applications) { }
+    private void persist() {
+        if (store == null) return;
+        var snapshot = new Snapshot(applications.values().stream().map(state -> new SavedApplication(state.id, state.programCode, state.createdAt,
+                state.documents.values().stream().map(document -> new SavedDocument(document.view(), document.content)).toList(), List.copyOf(state.journal), state.report, state.decision,
+                new LinkedHashMap<>(state.attributes))).toList());
+        try { store.write("applications", snapshot); committed = snapshot; }
+        catch (RuntimeException exception) {
+            applications.clear(); storedBytes = 0;
+            if (committed != null) hydrate(committed);
+            throw exception;
+        }
+    }
+    private void restore() {
+        var saved = store == null ? null : store.read("applications", Snapshot.class);
+        if (saved == null) return;
+        committed = saved;
+        hydrate(saved);
+        persist();
+    }
+    private void hydrate(Snapshot saved) {
+        for (var application : saved.applications()) {
+            var state = new ApplicationState(application.id(), application.programCode(), application.createdAt());
+            state.journal.addAll(application.journal()); state.report = application.report(); state.decision = application.decision();
+            if (application.attributes() != null) state.attributes.putAll(application.attributes());
+            for (var savedDocument : application.documents()) {
+                var view = savedDocument.document();
+                var document = new StoredDocument(view.id(), view.type(), view.filename(), savedDocument.content(), view.uploadedAt());
+                document.detectedType = view.detectedType(); document.confidence = view.confidence(); document.typeSource = view.typeSource();
+                document.typeChangedBy = view.typeChangedBy(); document.typeChangedAt = view.typeChangedAt(); document.outcome = view.outcome();
+                document.processingStatus = view.processingStatus(); document.processingError = view.processingError();
+                for (var field : view.fields()) document.fields.put(field.name(), new ExtractedField(field.name(), FieldValues.normalize(field.name(), field.value()), field.status(), field.confidence(), field.source(),
+                        field.manuallyCorrected(), FieldValues.normalize(field.name(), field.originalValue()), field.correctedBy(), field.correctedAt()));
+                if (document.processing()) {
+                    document.processingStatus = "FAILED"; document.processingError = "Обработка прервалась при перезапуске сервера. Повторите обработку.";
+                    invalidateReport(state);
+                    journal(state, document.id, "PROCESSING_FAILED", "Фоновая обработка прервана перезапуском", "Система", "SYSTEM", "FAILED", document.processingError);
+                }
+                state.documents.put(document.id, document); storedBytes += document.content.length;
+            }
+            applications.put(state.id, state);
+        }
     }
 }

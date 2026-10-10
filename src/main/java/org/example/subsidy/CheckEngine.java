@@ -12,10 +12,10 @@ final class CheckEngine {
     private final List<Finding> findings = new ArrayList<>();
     private CheckEngine(Map<String, Rule> rules) { this.rules = rules; }
 
-    static CheckReport check(Program program, List<DocumentView> documents, Map<String, Rule> rules) {
-        return new CheckEngine(rules).run(program, documents);
+    static CheckReport check(Program program, List<DocumentView> documents, Map<String, Rule> rules, Map<String, Boolean> attributes) {
+        return new CheckEngine(rules).run(program, documents, attributes);
     }
-    private CheckReport run(Program program, List<DocumentView> documents) {
+    private CheckReport run(Program program, List<DocumentView> documents, Map<String, Boolean> attributes) {
         var application = documents.stream().filter(document -> document.type() == DocumentType.APPLICATION).findFirst().orElse(null);
         var completeness = new ArrayList<Completeness>();
         var listed = EnumSet.noneOf(DocumentType.class);
@@ -23,12 +23,12 @@ final class CheckEngine {
         else {
             if (!program.active()) problem("PROGRAM_INACTIVE", "Выбранная программа больше не активна", null, "WARNING", null, "program_code", "PROGRAM_SELECTION");
             for (var required : program.documents()) {
-                listed.add(required.type());
                 var ids = documents.stream().filter(document -> document.type() == required.type()).map(DocumentView::id).toList();
-                Boolean applicable = "CONDITIONAL".equals(required.requirement()) ? condition(application, required.condition()) : Boolean.TRUE;
+                Boolean applicable = "CONDITIONAL".equals(required.requirement()) ? attributes.get(required.conditionAttribute()) : Boolean.TRUE;
                 if (Boolean.FALSE.equals(applicable)) continue;
-                String status = !ids.isEmpty() ? "FOUND" : "CONDITIONAL".equals(required.requirement()) ? "CONDITIONAL_MISSING" : "MISSING";
-                completeness.add(new Completeness(required.type(), status, required.requirement(), ids, ids.isEmpty(), required.condition()));
+                listed.add(required.type());
+                String status = !ids.isEmpty() ? "FOUND" : "CONDITIONAL".equals(required.requirement()) ? applicable == null ? "CONDITIONAL_UNKNOWN" : "CONDITIONAL_MISSING" : "MISSING";
+                completeness.add(new Completeness(required.type(), status, required.requirement(), ids, ids.isEmpty(), required.condition(), required.conditionAttribute()));
                 if (ids.isEmpty()) {
                     if ("REQUIRED".equals(required.requirement())) add("MISSING_DOCUMENT", "Отсутствует обязательный документ: " + title(required.type()), required.type(), "ERROR", null, null, "MISSING_DOCUMENT");
                     else problem("CONDITIONAL_DOCUMENT_MISSING", applicable == null ? "Требуется проверить применимость условия «" + required.condition() + "» и наличие документа: " + title(required.type()) : "Отсутствует условный документ: " + title(required.type()) + ". Условие: " + required.condition(), required.type(), "WARNING", null, null, "CONDITIONAL_DOCUMENT");

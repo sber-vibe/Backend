@@ -31,6 +31,9 @@ public class ApplicationController {
     @GetMapping("/programs")
     public List<Program> programs() { return service.programs(); }
 
+    @GetMapping("/application-attributes")
+    public List<ApplicationAttribute> attributes() { return CheckSettings.ATTRIBUTES; }
+
     @PostMapping("/applications")
     public ResponseEntity<ApplicationView> create(@Valid @RequestBody CreateApplication request) {
         var application = service.create(request);
@@ -72,6 +75,11 @@ public class ApplicationController {
     @PostMapping("/applications/{id}/check")
     public CheckReport check(@PathVariable UUID id) {
         return service.check(id);
+    }
+
+    @PatchMapping("/applications/{id}")
+    public ApplicationView attributes(@PathVariable UUID id, @Valid @RequestBody ApplicationPatch request, Principal principal) {
+        return service.patchApplication(id, request, principal == null ? null : principal.getName());
     }
 
     @PatchMapping("/applications/{id}/documents/{documentId}")

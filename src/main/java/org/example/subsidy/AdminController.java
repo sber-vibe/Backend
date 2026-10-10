@@ -28,8 +28,9 @@ public class AdminController {
     @PutMapping("/rules/{code}") public Rule updateRule(@PathVariable String code, @Valid @RequestBody Rule rule, Principal actor) {
         return settings.saveRule(code, rule, name(actor));
     }
-    @GetMapping("/journal") public List<JournalEntry> journal(@RequestParam(defaultValue = "200") int limit) {
-        return java.util.stream.Stream.concat(settings.journal(limit).stream(), applications.allJournal(limit).stream())
+    @GetMapping("/journal") public List<JournalEntry> journal(@RequestParam(defaultValue = "200") int limit,
+            @RequestParam(required = false) java.time.Instant before, @RequestParam(required = false) String action) {
+        return java.util.stream.Stream.concat(settings.journal(limit, before, action).stream(), applications.allJournal(limit, before, action).stream())
                 .sorted(java.util.Comparator.comparing(JournalEntry::at).reversed()).limit(Math.max(1, Math.min(limit, 1000))).toList();
     }
     private static String name(Principal principal) { return principal == null ? null : principal.getName(); }

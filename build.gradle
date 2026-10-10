@@ -23,6 +23,7 @@ dependencies {
     implementation 'org.apache.pdfbox:pdfbox:3.0.8'
     implementation 'org.apache.poi:poi-ooxml:5.4.1'
     implementation 'org.apache.poi:poi-scratchpad:5.4.1'
+    runtimeOnly 'com.h2database:h2'
     implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server'
     testImplementation platform('org.springframework.boot:spring-boot-dependencies:4.1.1')
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

@@ -23,7 +23,7 @@ class ApplicationServiceTest {
     void missingDocumentsAreReported() {
         var report = service.check(create());
         assertEquals("ERRORS", report.status());
-        assertEquals(3, report.findings().stream().filter(finding -> finding.code().equals("MISSING_DOCUMENT")).count());
+        assertEquals(6, report.findings().stream().filter(finding -> finding.code().equals("MISSING_DOCUMENT")).count());
     }
 
     @Test

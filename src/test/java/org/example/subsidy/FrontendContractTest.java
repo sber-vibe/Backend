@@ -20,9 +20,9 @@ class FrontendContractTest {
         var settings = new CheckSettings();
         settings.saveProgram("TEST", new Program("TEST", "Тестовая программа", true, List.of(
                 new ProgramDocument(DocumentType.APPLICATION, "REQUIRED"),
-                new ProgramDocument(DocumentType.CONFORMITY_CERTIFICATE, "CONDITIONAL", "requires_certification=true"))), true, "admin");
+                new ProgramDocument(DocumentType.CONFORMITY_CERTIFICATE, "CONDITIONAL", "если нужна сертификация", "requiresCertification"))), true, "admin");
         var manual = settings.snapshot().get("MANUAL_REVIEW_REQUIRED");
-        settings.saveRule(manual.code(), new Rule(manual.code(), manual.name(), null, false, manual.severity(), List.of(), manual.params()), "admin");
+        settings.saveRule(manual.code(), new Rule(manual.code(), manual.name(), null, false, manual.severity(), List.of(), manual.params(), manual.paramSchema(), manual.version(), null, null), "admin");
         return settings;
     }
     private MockMultipartFile file(String name) { return new MockMultipartFile("file", name, "text/plain", "test".getBytes()); }
@@ -32,12 +32,13 @@ class FrontendContractTest {
         try (var fixture = new Fixture(new ApplicationService((data, name) -> new DocumentRecognizer.Recognition(DocumentType.APPLICATION, 0.95, fields(false)), Runnable::run, settings, 240))) {
             var service = fixture.service;
             UUID id = service.create(new CreateApplication("TEST")).id();
+            service.patchApplication(id, new ApplicationPatch(Map.of("requiresCertification", false)), "anna");
             var uploaded = service.upload(id, null, file("one.txt"));
             assertNull(uploaded.outcome());
             assertEquals("PASSED", service.check(id).status());
             assertEquals("PASSED", service.get(id).documents().get(0).outcome());
             assertEquals(1, service.get(id).report().completeness().size());
-            service.patch(id, uploaded.id(), new DocumentPatch(null, List.of(new FieldPatch("requires_certification", "true"))), "anna");
+            service.patchApplication(id, new ApplicationPatch(Map.of("requiresCertification", true)), "anna");
             assertNull(service.get(id).report());
             assertNull(service.get(id).documents().get(0).outcome());
             assertEquals("ATTENTION", service.check(id).status());
@@ -56,11 +57,12 @@ class FrontendContractTest {
         try (var fixture = new Fixture(new ApplicationService((data, name) -> new DocumentRecognizer.Recognition(DocumentType.APPLICATION, 0.95, values), Runnable::run, settings, 240))) {
             var service = fixture.service;
             UUID id = service.create(new CreateApplication("TEST")).id();
+            service.patchApplication(id, new ApplicationPatch(Map.of("requiresCertification", false)), "anna");
             var doc = service.upload(id, DocumentType.APPLICATION, file("app.txt"));
             service.upload(id, DocumentType.COST_JUSTIFICATION, file("cost.txt"));
             assertEquals("PASSED", service.check(id).status());
             var rule = settings.snapshot().get("OWN_FUNDS_SHARE");
-            settings.saveRule(rule.code(), new Rule(rule.code(), rule.name(), null, true, "ERROR", List.of(DocumentType.COST_JUSTIFICATION), Map.of("minOwnFundsShare", 0.75)), "admin");
+            settings.saveRule(rule.code(), new Rule(rule.code(), rule.name(), null, true, "ERROR", List.of(DocumentType.COST_JUSTIFICATION), Map.of("minOwnFundsShare", 0.75), rule.paramSchema(), rule.version(), null, null), "admin");
             var report = service.check(id);
             assertEquals("ERRORS", report.status());
             assertTrue(report.findings().stream().anyMatch(finding -> "OWN_FUNDS_SHARE".equals(finding.rule()) && "ERROR".equals(finding.severity())));

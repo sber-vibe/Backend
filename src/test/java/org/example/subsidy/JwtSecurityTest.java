@@ -30,7 +30,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Режим с Keycloak: подписанные RSA-ключом токены, JWKS отдаёт локальный HTTP-сервер. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "storage.jdbc-url=jdbc:h2:mem:jwt-api;DB_CLOSE_DELAY=-1")
 class JwtSecurityTest {
     private static final String ISSUER = "http://localhost/kc/realms/subsidy";
     private static final String AUDIENCE = "subsidy-backend";
@@ -101,6 +101,8 @@ class JwtSecurityTest {
                 .header("Authorization", "Bearer " + specialist).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
         String path = response.headers().firstValue("Location").orElseThrow();
+        assertEquals(200, client.send(HttpRequest.newBuilder(URI.create(base + path + "/check"))
+                .header("Authorization", "Bearer " + specialist).POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString()).statusCode());
         var decision = client.send(HttpRequest.newBuilder(URI.create(base + path + "/decision"))
                 .header("Authorization", "Bearer " + specialist).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"ACCEPTED\",\"decidedBy\":\"forged\"}")).build(), HttpResponse.BodyHandlers.ofString());
@@ -126,6 +128,31 @@ class JwtSecurityTest {
         var json = tools.jackson.databind.json.JsonMapper.builder().build();
         assertEquals("Недостаточно прав для этой операции", json.readTree(forbidden.body()).get("detail").asString());
         assertNotNull(json.readTree(get("/api/v1/applications", null).body()).get("detail"));
+    }
+
+    @Test
+    void adminCannotReadOrDecideApplicationsButDualRoleCanAndDenialsAreAudited() throws Exception {
+        String specialist = token(KEY, claims().build());
+        String admin = token(KEY, claims().claim("realm_access", Map.of("roles", List.of("admin"))).build());
+        String dual = token(KEY, claims().claim("realm_access", Map.of("roles", List.of("admin", "specialist"))).build());
+        assertEquals(403, get("/api/v1/applications", admin).statusCode());
+        assertEquals(200, get("/api/v1/applications", dual).statusCode());
+        assertEquals(200, get("/api/v1/admin/rules", dual).statusCode());
+        String base = "http://localhost:" + port;
+        var created = client.send(HttpRequest.newBuilder(URI.create(base + "/api/v1/applications"))
+                .header("Authorization", "Bearer " + specialist).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
+        String path = created.headers().firstValue("Location").orElseThrow();
+        assertEquals(403, get(path + "/documents/" + java.util.UUID.randomUUID(), admin).statusCode());
+        var rejected = client.send(HttpRequest.newBuilder(URI.create(base + path + "/decision"))
+                .header("Authorization", "Bearer " + admin).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"decision\":\"ACCEPTED\"}")).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, rejected.statusCode());
+        assertTrue(get(path, specialist).body().contains("\"decision\":null"));
+        var journal = get("/api/v1/admin/journal?action=ACCESS_DENIED&limit=50", admin);
+        assertEquals(200, journal.statusCode());
+        assertTrue(journal.body().contains("ACCESS_DENIED"));
+        assertTrue(journal.body().contains("\"outcome\":\"FAILED\""));
     }
 
     @Test

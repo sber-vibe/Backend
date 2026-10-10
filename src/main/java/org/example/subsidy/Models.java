@@ -18,7 +18,7 @@ public final class Models {
                                   BigDecimal requestedAmount, Instant createdAt,
                                   List<DocumentView> documents, CheckReport report,
                                   String programCode, String programName, boolean programDetected,
-                                  List<Requisite> requisites, Decision decision) {
+                                  List<Requisite> requisites, Decision decision, java.util.Map<String, Boolean> attributes) {
     }
 
     public record DocumentView(UUID id, DocumentType type, String filename, long size, Instant uploadedAt,
@@ -51,28 +51,39 @@ public final class Models {
     }
 
     public record JournalEntry(UUID id, Instant at, String actor, String actorType, String action,
-                               String message, UUID applicationId, UUID documentId, String outcome, String reason) {
+                               String message, UUID applicationId, UUID documentId, String outcome, String reason,
+                               Object before, Object after, Long version, String objectType, String objectId) {
+        public JournalEntry(UUID id, Instant at, String actor, String actorType, String action, String message,
+                            UUID applicationId, UUID documentId, String outcome, String reason) {
+            this(id, at, actor, actorType, action, message, applicationId, documentId, outcome, reason, null, null, null,
+                    documentId != null ? "DOCUMENT" : applicationId != null ? "APPLICATION" : null,
+                    documentId != null ? documentId.toString() : applicationId != null ? applicationId.toString() : null);
+        }
     }
 
     public record Completeness(DocumentType type, String status, String requirement, List<UUID> documentIds,
-                                boolean canUpload, String condition) {
+                                boolean canUpload, String condition, String conditionAttribute) {
         public Completeness(DocumentType type, String status, String requirement, List<UUID> documentIds, boolean canUpload) {
-            this(type, status, requirement, documentIds, canUpload, null);
+            this(type, status, requirement, documentIds, canUpload, null, null);
         }
     }
 
     public record Program(@NotBlank @Pattern(regexp = "[A-Z][A-Z0-9_]{0,63}") String code,
                           @NotBlank @Size(max = 200) String name, boolean active,
                           @NotNull @Size(max = 30) List<@NotNull @Valid ProgramDocument> documents,
-                          @Size(max = 4000) String description) {
+                          @Size(max = 4000) String description, Long version, String updatedBy, Instant updatedAt) {
         public Program(String code, String name, boolean active, List<ProgramDocument> documents) {
-            this(code, name, active, documents, null);
+            this(code, name, active, documents, null, null, null, null);
+        }
+        public Program(String code, String name, boolean active, List<ProgramDocument> documents, String description) {
+            this(code, name, active, documents, description, null, null, null);
         }
     }
     public record ProgramDocument(@NotNull DocumentType type,
                                   @NotNull @Pattern(regexp = "REQUIRED|CONDITIONAL") String requirement,
-                                  @Size(max = 1000) String condition) {
-        public ProgramDocument(DocumentType type, String requirement) { this(type, requirement, null); }
+                                  @Size(max = 1000) String condition, String conditionAttribute) {
+        public ProgramDocument(DocumentType type, String requirement) { this(type, requirement, null, null); }
+        public ProgramDocument(DocumentType type, String requirement, String condition) { this(type, requirement, condition, null); }
     }
     public enum DecisionCode { ACCEPTED, RETURNED, REJECTED }
     public record DecisionRequest(@NotNull DecisionCode decision, @Size(max = 4000) String comment) { }
@@ -81,7 +92,16 @@ public final class Models {
                        @Size(max = 4000) String description, boolean enabled,
                        @NotNull @Pattern(regexp = "ERROR|WARNING|INFO") String severity,
                        @Size(max = 30) List<@NotNull DocumentType> documentTypes,
-                       java.util.Map<String, Object> params) { }
+                       java.util.Map<String, Object> params, java.util.Map<String, ParamSchema> paramSchema,
+                       Long version, String updatedBy, Instant updatedAt) {
+        public Rule(String code, String name, String description, boolean enabled, String severity,
+                    List<DocumentType> documentTypes, java.util.Map<String, Object> params) {
+            this(code, name, description, enabled, severity, documentTypes, params, null, null, null, null);
+        }
+    }
+    public record ParamSchema(String kind, String label, String unit, Number min, Number max, boolean required) { }
+    public record ApplicationAttribute(String code, String name) { }
+    public record ApplicationPatch(@NotNull @Size(max = 10) java.util.Map<String, Boolean> attributes) { }
 
     public record CheckReport(String status, Instant checkedAt, List<Finding> findings, List<Completeness> completeness) {
     }
