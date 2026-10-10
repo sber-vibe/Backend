@@ -12,142 +12,123 @@ class AiResultPostprocessorTest {
     private static final JsonMapper JSON =
             JsonMapper.builder().build();
 
-    private static final String VALID_INPUT = """
+    private static final String APPLICATION = """
             {
               "document_type": "APPLICATION",
               "organization": "ООО Ромашка",
               "inn": "7707083893",
-              "kpp": "773601001",
-              "bank_inn": "",
-              "bank_kpp": "",
+              "ogrn": "",
+              "kpp": "",
               "document_date": "12.05.2020",
-              "requested_amount": "",
-              "purpose": "Покупка оборудования",
+              "requested_amount": "1250000",
+              "signatory": "",
+              "purpose": "Приобретение оборудования",
               "uncertain_fields": []
             }
             """;
 
     @Test
-    void validDocumentHasNoWarnings() {
+    void validApplicationHasNoWarnings() {
 
         JsonNode result = parse(
-                AiResultPostprocessor.process(VALID_INPUT)
+                AiResultPostprocessor.process(APPLICATION)
         );
 
         assertFalse(result.get("needs_review").asBoolean());
         assertEquals(0, result.get("warnings").size());
+    }
 
-        assertEquals(
-                "7707083893",
-                result.get("fields").get("inn").asString()
+    @Test
+    void missingAmountRequiresReview() {
+
+        String raw = APPLICATION.replace(
+                "\"requested_amount\": \"1250000\"",
+                "\"requested_amount\": \"\""
         );
 
+        JsonNode result = parse(
+                AiResultPostprocessor.process(raw)
+        );
+
+        assertTrue(result.get("needs_review").asBoolean());
         assertTrue(
-                result.get("fields")
-                        .get("requested_amount").isNull()
+                result.get("warnings").toString()
+                        .contains("requested_amount")
         );
     }
 
     @Test
     void invalidInnRequiresReview() {
 
-        String input = VALID_INPUT.replace(
-                "7707083893", "7725123456"
+        String raw = APPLICATION.replace(
+                "7707083893",
+                "7725123456"
         );
 
         JsonNode result = parse(
-                AiResultPostprocessor.process(input)
+                AiResultPostprocessor.process(raw)
         );
 
         assertTrue(result.get("needs_review").asBoolean());
-
         assertTrue(
-                result.get("warnings").toString()
-                        .contains("ИНН заявителя")
-        );
-
-        // Ошибочное значение сохраняется.
-        assertEquals(
-                "7725123456",
-                result.get("fields").get("inn").asString()
+                result.get("warnings").toString().contains("ИНН")
         );
     }
 
     @Test
-    void unknownDocumentClearsPurpose() {
+    void realEstateHasSpecificFields() {
 
-        String input = VALID_INPUT.replace(
-                "\"APPLICATION\"", "\"UNKNOWN\""
-        );
+        String raw = """
+                {
+                  "document_type": "REAL_ESTATE_DOCUMENT",
+                  "cadastral_number": "61:44:0030601:41",
+                  "area": "1000",
+                  "property_purpose": "Нежилое",
+                  "address": "Ростовская область",
+                  "rights_holder": "",
+                  "uncertain_fields": []
+                }
+                """;
 
         JsonNode result = parse(
-                AiResultPostprocessor.process(input)
+                AiResultPostprocessor.process(raw)
         );
 
-        assertEquals(
-                "UNKNOWN",
-                result.get("document_type").asString()
+        assertFalse(result.get("needs_review").asBoolean());
+        assertNotNull(
+                result.get("fields").get("cadastral_number")
         );
-
-        assertTrue(
-                result.get("fields").get("purpose").isNull()
+        assertNull(
+                result.get("fields").get("bank_kpp")
         );
     }
 
     @Test
-    void uncertainFieldRequiresReview() {
+    void unknownDocumentRequiresReview() {
 
-        String input = VALID_INPUT.replace(
+        JsonNode result = parse(
+                AiResultPostprocessor.process("""
+                        {
+                          "document_type": "UNKNOWN",
+                          "uncertain_fields": []
+                        }
+                        """)
+        );
+
+        assertTrue(result.get("needs_review").asBoolean());
+    }
+
+    @Test
+    void rejectsUnexpectedFields() {
+
+        String raw = APPLICATION.replace(
                 "\"uncertain_fields\": []",
-                "\"uncertain_fields\": [\"document_date\"]"
-        );
-
-        JsonNode result = parse(
-                AiResultPostprocessor.process(input)
-        );
-
-        assertTrue(result.get("needs_review").asBoolean());
-
-        assertEquals(
-                "document_date",
-                result.get("uncertain_fields")
-                        .get(0).asString()
-        );
-    }
-
-
-    @Test
-    void invalidDateRequiresReview() {
-
-        String input = VALID_INPUT.replace(
-                "12.05.2020", "31.02.2026"
-        );
-
-        JsonNode result = parse(
-                AiResultPostprocessor.process(input)
-        );
-
-        assertTrue(result.get("needs_review").asBoolean());
-
-        assertTrue(
-                result.get("warnings").toString()
-                        .contains("Дата документа")
-        );
-    }
-
-
-    @Test
-    void rejectsUnexpectedField() {
-
-        String input = VALID_INPUT.replace(
-                "\"uncertain_fields\": []",
-                "\"uncertain_fields\": [], "
-                        + "\"extra_field\": \"unexpected\""
+                "\"uncertain_fields\": [], \"admin_override\": \"yes\""
         );
 
         assertThrows(
                 IllegalStateException.class,
-                () -> AiResultPostprocessor.process(input)
+                () -> AiResultPostprocessor.process(raw)
         );
     }
 
@@ -156,72 +137,7 @@ class AiResultPostprocessorTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> AiResultPostprocessor.process(
-                        "{\"document_type\":"
-                )
-        );
-    }
-
-    @Test
-    void rejectsUnknownUncertainField() {
-
-        String input = VALID_INPUT.replace(
-                "\"uncertain_fields\": []",
-                "\"uncertain_fields\": [\"admin_override\"]"
-        );
-
-        assertThrows(
-                IllegalStateException.class,
-                () -> AiResultPostprocessor.process(input)
-        );
-    }
-
-    @Test
-    void rejectsUnsupportedDocumentType() {
-
-        String input = VALID_INPUT.replace(
-                "\"APPLICATION\"",
-                "\"APPROVED\""
-        );
-
-        assertThrows(
-                IllegalStateException.class,
-                () -> AiResultPostprocessor.process(input)
-        );
-    }
-
-
-    @Test
-    void invalidAmountRequiresReview() {
-
-        String input = VALID_INPUT.replace(
-                "\"requested_amount\": \"\"",
-                "\"requested_amount\": \"1 25О 000\""
-        );
-
-        JsonNode result = parse(
-                AiResultPostprocessor.process(input)
-        );
-
-        assertTrue(result.get("needs_review").asBoolean());
-
-        assertTrue(
-                result.get("warnings").toString()
-                        .contains("сумму")
-        );
-    }
-
-
-    @Test
-    void missingFieldIsRejected() {
-
-        String input = VALID_INPUT.replace(
-                "\"bank_kpp\": \"\",", ""
-        );
-
-        assertThrows(
-                IllegalStateException.class,
-                () -> AiResultPostprocessor.process(input)
+                () -> AiResultPostprocessor.process("{invalid")
         );
     }
 

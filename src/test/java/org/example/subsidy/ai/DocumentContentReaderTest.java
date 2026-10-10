@@ -418,7 +418,7 @@ class DocumentContentReaderTest {
 
         assertThrows(IOException.class, () ->
                 reader.read(
-                        "X".repeat(6001)
+                        "X".repeat(64_001)
                                 .getBytes(StandardCharsets.UTF_8),
                         "document.txt"
                 )

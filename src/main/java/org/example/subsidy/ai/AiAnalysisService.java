@@ -7,14 +7,19 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.util.concurrent.Semaphore;
 
+
 @Service
 public class AiAnalysisService {
+    private static final Logger log =
+            LoggerFactory.getLogger(AiAnalysisService.class);
 
     private final DocumentReader reader;
     private final VisionAnalysisClient aiClient;
@@ -45,9 +50,9 @@ public class AiAnalysisService {
             DocumentContent content =
                     reader.read(data, filename);
 
-            String rawJson = aiClient.analyzeContent(
-                    content.text(),
-                    content.images()
+            String rawJson = AiChunkAnalyzer.analyze(
+                    content,
+                    aiClient
             );
 
             return AiResultPostprocessor.process(rawJson);
@@ -89,13 +94,13 @@ public class AiAnalysisService {
 
         } catch (IllegalStateException e) {
 
-            // Некорректный или незавершённый ответ модели.
+            log.warn("AI analysis failed", e);
+
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
                     "AI provider returned an invalid result",
                     e
             );
-
         } finally {
             // Освобождаем доступ к GPU даже при ошибке.
             gpuSlot.release();

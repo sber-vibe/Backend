@@ -1,8 +1,8 @@
+
 package org.example.subsidy.ai;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.server.ResponseStatusException;
@@ -16,6 +16,20 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class AiAnalysisServiceTest {
+
+    private static final String VALID_MODEL_RESULT = """
+            {
+              "organization": "ООО Ромашка",
+              "inn": "7707083893",
+              "ogrn": "",
+              "kpp": "",
+              "document_date": "12.05.2020",
+              "requested_amount": "1250000",
+              "signatory": "",
+              "purpose": "Покупка оборудования",
+              "uncertain_fields": []
+            }
+            """;
 
     private DocumentReader reader;
     private VisionAnalysisClient client;
@@ -36,89 +50,151 @@ class AiAnalysisServiceTest {
                                 List.of()
                         )
                 );
-    }
 
+        when(client.classifyDocument(anyString(), anyList()))
+                .thenReturn(AiDocumentContract.APPLICATION);
+    }
 
     @Test
     void returns502WhenAiReturnsMalformedJson() {
 
-        when(client.analyzeContent(anyString(), anyList()))
-                .thenReturn("{invalid json}");
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        )).thenReturn("{invalid json}");
 
-        ResponseStatusException error = assertThrows(
-                ResponseStatusException.class,
-                () -> service.analyze(
-                        new byte[]{1, 2, 3},
-                        "document.txt"
-                )
-        );
-
-        assertEquals(
-                HttpStatus.BAD_GATEWAY,
-                error.getStatusCode()
-        );
+        assertAnalysisStatus(HttpStatus.BAD_GATEWAY);
     }
-
 
     @Test
     void returns503WhenOllamaIsUnavailable() {
 
-        when(client.analyzeContent(anyString(), anyList()))
-                .thenThrow(
-                        new ResourceAccessException(
-                                "Connection refused",
-                                new ConnectException("Connection refused")
-                        )
-                );
-
-        ResponseStatusException error = assertThrows(
-                ResponseStatusException.class,
-                () -> service.analyze(
-                        new byte[]{1, 2, 3},
-                        "document.txt"
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        )).thenThrow(
+                new ResourceAccessException(
+                        "Connection refused",
+                        new ConnectException("Connection refused")
                 )
         );
 
-        assertEquals(
-                HttpStatus.SERVICE_UNAVAILABLE,
-                error.getStatusCode()
-        );
+        assertAnalysisStatus(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @Test
     void returns504WhenOllamaTimesOut() {
 
-        when(client.analyzeContent(anyString(), anyList()))
-                .thenThrow(
-                        new ResourceAccessException(
-                                "Request timed out",
-                                new HttpTimeoutException("Timeout")
-                        )
-                );
-
-        ResponseStatusException error = assertThrows(
-                ResponseStatusException.class,
-                () -> service.analyze(
-                        new byte[]{1, 2, 3},
-                        "document.txt"
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        )).thenThrow(
+                new ResourceAccessException(
+                        "Request timed out",
+                        new HttpTimeoutException("Timeout")
                 )
         );
 
-        assertEquals(
-                HttpStatus.GATEWAY_TIMEOUT,
-                error.getStatusCode()
-        );
+        assertAnalysisStatus(HttpStatus.GATEWAY_TIMEOUT);
     }
 
     @Test
     void returns502WhenAiResponseIsInvalid() {
 
-        when(client.analyzeContent(anyString(), anyList()))
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        )).thenThrow(
+                new IllegalStateException("Incomplete generation")
+        );
+
+        assertAnalysisStatus(HttpStatus.BAD_GATEWAY);
+    }
+
+    @Test
+    void successfulAnalysisReturnsValidatedResult() throws Exception {
+
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        )).thenReturn(VALID_MODEL_RESULT);
+
+        String result = service.analyze(
+                new byte[]{1, 2, 3},
+                "document.txt"
+        );
+
+        assertTrue(
+                result.contains("\"document_type\":\"APPLICATION\"")
+        );
+
+        assertTrue(
+                result.contains("\"needs_review\":false")
+        );
+
+        assertTrue(
+                result.contains("\"requested_amount\":\"1250000\"")
+        );
+
+        verify(client).analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        );
+    }
+
+    @Test
+    void failedRequestReleasesGpuSlot() throws Exception {
+
+        when(client.analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        ))
                 .thenThrow(
-                        new IllegalStateException(
-                                "Incomplete generation"
+                        new ResourceAccessException(
+                                "Connection refused",
+                                new ConnectException("Connection refused")
                         )
-                );
+                )
+                .thenReturn(VALID_MODEL_RESULT);
+
+        assertThrows(
+                ResponseStatusException.class,
+                () -> service.analyze(
+                        new byte[]{1},
+                        "document.txt"
+                )
+        );
+
+        String secondResult = service.analyze(
+                new byte[]{1},
+                "document.txt"
+        );
+
+        assertTrue(
+                secondResult.contains(
+                        "\"document_type\":\"APPLICATION\""
+                )
+        );
+
+        assertTrue(
+                secondResult.contains("\"needs_review\":false")
+        );
+
+        verify(client, times(2)).analyzeFields(
+                anyString(),
+                anyList(),
+                eq(AiDocumentContract.APPLICATION)
+        );
+    }
+
+    private void assertAnalysisStatus(HttpStatus expected) {
 
         ResponseStatusException error = assertThrows(
                 ResponseStatusException.class,
@@ -128,71 +204,6 @@ class AiAnalysisServiceTest {
                 )
         );
 
-        assertEquals(
-                HttpStatus.BAD_GATEWAY,
-                error.getStatusCode()
-        );
+        assertEquals(expected, error.getStatusCode());
     }
-
-    @Test
-    void successfulAnalysisReturnsValidatedResult() throws Exception {
-        String modelResult = """
-                {
-                  "document_type": "APPLICATION",
-                  "organization": "ООО Ромашка",
-                  "inn": "7707083893",
-                  "kpp": "",
-                  "bank_inn": "",
-                  "bank_kpp": "",
-                  "document_date": "12.05.2020",
-                  "requested_amount": "",
-                  "purpose": "Покупка оборудования",
-                  "uncertain_fields": []
-                }
-                """;
-
-        when(client.analyzeContent(anyString(), anyList()))
-                .thenReturn(modelResult);
-
-        String result = service.analyze(
-                new byte[]{1, 2, 3}, "document.txt");
-
-        assertTrue(result.contains("\"document_type\":\"APPLICATION\""));
-        assertTrue(result.contains("\"needs_review\":false"));
-        verify(client).analyzeContent(eq("Тестовый документ"), anyList());
-    }
-
-    @Test
-    void failedRequestReleasesGpuSlot() throws Exception {
-        String modelResult = """
-                {
-                  "document_type": "UNKNOWN",
-                  "organization": "",
-                  "inn": "",
-                  "kpp": "",
-                  "bank_inn": "",
-                  "bank_kpp": "",
-                  "document_date": "",
-                  "requested_amount": "",
-                  "purpose": "",
-                  "uncertain_fields": []
-                }
-                """;
-
-        when(client.analyzeContent(anyString(), anyList()))
-                .thenThrow(new ResourceAccessException(
-                        "Connection refused",
-                        new ConnectException("Connection refused")))
-                .thenReturn(modelResult);
-
-        assertThrows(ResponseStatusException.class,
-                () -> service.analyze(new byte[]{1}, "document.txt"));
-
-        String secondResult = service.analyze(
-                new byte[]{1}, "document.txt");
-
-        assertTrue(secondResult.contains("\"document_type\":\"UNKNOWN\""));
-        verify(client, times(2)).analyzeContent(anyString(), anyList());
-    }
-
 }

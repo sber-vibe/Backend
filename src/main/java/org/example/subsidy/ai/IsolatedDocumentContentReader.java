@@ -26,7 +26,7 @@ public final class IsolatedDocumentContentReader
     private static final int MAX_INPUT_BYTES =
             10 * 1024 * 1024;
 
-    private static final int MAX_TEXT_BYTES = 24 * 1024;
+    private static final int MAX_TEXT_BYTES = 256 * 1024;
     private static final int MAX_IMAGES = 2;
     private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -227,8 +227,8 @@ public final class IsolatedDocumentContentReader
             throws IOException {
 
         if (!Files.isRegularFile(file)
-                || Files.size(file)
-                > 2L * MAX_IMAGE_BYTES + 128 * 1024) {
+                || Files.size(file) >
+                2L * MAX_IMAGE_BYTES + MAX_TEXT_BYTES + 8192) {
 
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
