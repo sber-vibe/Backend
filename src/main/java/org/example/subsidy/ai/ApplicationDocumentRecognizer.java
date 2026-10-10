@@ -11,11 +11,14 @@ import static org.example.subsidy.Models.*;
 public class ApplicationDocumentRecognizer implements DocumentRecognizer {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private final AiAnalysisService analysis;
-    public ApplicationDocumentRecognizer(AiAnalysisService analysis) { this.analysis = analysis; }
+    private final RemoteAiClient remote;
+    public ApplicationDocumentRecognizer(AiAnalysisService analysis) { this(analysis, null); }
+    @org.springframework.beans.factory.annotation.Autowired
+    public ApplicationDocumentRecognizer(AiAnalysisService analysis, RemoteAiClient remote) { this.analysis = analysis; this.remote = remote; }
 
     @Override
     public Recognition recognize(byte[] content, String filename) throws Exception {
-        return parse(analysis.recognizeDocument(content, filename));
+        return parse(remote != null && remote.enabled() ? remote.recognize(content, filename) : analysis.recognizeDocument(content, filename));
     }
 
     static Recognition parse(String response) {
