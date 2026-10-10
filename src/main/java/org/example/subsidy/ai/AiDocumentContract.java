@@ -8,6 +8,8 @@ final class AiDocumentContract {
 
     static final String DOCUMENT_TYPE = "document_type";
     static final String UNCERTAIN_FIELDS = "uncertain_fields";
+    static final String ACCOUNTS = "accounts";
+    static final String PASSPORT_DETAILS = "passport_details";
 
     static final String APPLICATION = "APPLICATION";
     static final String PERSONAL_DATA_CONSENT = "PERSONAL_DATA_CONSENT";
@@ -18,6 +20,13 @@ final class AiDocumentContract {
     static final String REAL_ESTATE_DOCUMENT = "REAL_ESTATE_DOCUMENT";
     static final String GUARANTEE_LETTER = "GUARANTEE_LETTER";
     static final String UNKNOWN = "UNKNOWN";
+
+    static final List<String> PASSPORT_FIELDS = List.of(
+            "passport_series",
+            "passport_number",
+            "passport_issued_by",
+            "passport_issue_date"
+    );
 
     static final List<String> DOCUMENT_TYPES = List.of(
             APPLICATION,
@@ -38,7 +47,12 @@ final class AiDocumentContract {
                     "signatory", "purpose"
             ),
             PERSONAL_DATA_CONSENT, List.of(
-                    "full_name", "passport_details", "document_date"
+                    "full_name",
+                    "passport_series",
+                    "passport_number",
+                    "passport_issued_by",
+                    "passport_issue_date",
+                    "document_date"
             ),
             CONFORMITY_CERTIFICATE, List.of(
                     "certificate_number", "certification_body",
@@ -51,8 +65,12 @@ final class AiDocumentContract {
                     "total_expenses", "own_funds", "expense_items"
             ),
             BANK_STATEMENT, List.of(
-                    "organization", "inn", "account_number",
-                    "account_balance", "document_date"
+                    "organization", "inn",
+                    "passport_series",
+                    "passport_number",
+                    "passport_issued_by",
+                    "passport_issue_date",
+                    "document_date", ACCOUNTS
             ),
             REAL_ESTATE_DOCUMENT, List.of(
                     "cadastral_number", "area",
@@ -75,18 +93,14 @@ final class AiDocumentContract {
             CONFORMITY_CERTIFICATE, List.of(
                     "certificate_number", "valid_until"
             ),
-            PROJECT_PRESENTATION, List.of(
-                    "project_name"
-            ),
+            PROJECT_PRESENTATION, List.of("project_name"),
             COST_JUSTIFICATION, List.of(
                     "total_expenses", "own_funds"
             ),
             BANK_STATEMENT, List.of(
-                    "organization", "account_balance", "document_date"
+                    "organization", "document_date", ACCOUNTS
             ),
-            REAL_ESTATE_DOCUMENT, List.of(
-                    "cadastral_number"
-            ),
+            REAL_ESTATE_DOCUMENT, List.of("cadastral_number"),
             GUARANTEE_LETTER, List.of(
                     "organization", "guarantee_amount", "document_date"
             )
@@ -102,10 +116,11 @@ final class AiDocumentContract {
 
     static String instructionsFor(String type) {
         return switch (type) {
+
             case APPLICATION -> """
-                    organization: заявитель, организация или ИП.
+                    organization: организация или ИП заявителя.
                     inn: ИНН заявителя.
-                    ogrn: ОГРН или ОГРНИП заявителя.
+                    ogrn: ОГРН или ОГРНИП.
                     kpp: КПП заявителя, если применимо.
                     document_date: дата заявления.
                     requested_amount: запрашиваемая сумма субсидии.
@@ -115,53 +130,88 @@ final class AiDocumentContract {
 
             case PERSONAL_DATA_CONSENT -> """
                     full_name: ФИО субъекта персональных данных.
-                    passport_details: паспортные данные субъекта.
                     document_date: дата подписания согласия.
+
+                    passport_series: серия паспорта субъекта,
+                    ровно четыре цифры без пробелов.
+
+                    passport_number: номер паспорта субъекта,
+                    ровно шесть цифр без пробелов.
+
+                    passport_issued_by: орган, выдавший паспорт.
+                    passport_issue_date: дата выдачи паспорта.
+
+                    Извлекай паспортные реквизиты только тогда,
+                    когда они явно относятся к субъекту согласия.
+                    Не принимай паспорт за ИНН.
                     """;
 
             case CONFORMITY_CERTIFICATE -> """
                     certificate_number: номер сертификата.
                     certification_body: орган сертификации.
-                    issue_date: дата выдачи сертификата.
-                    valid_until: дата окончания срока действия.
+                    issue_date: дата выдачи.
+                    valid_until: дата окончания действия.
                     """;
 
             case PROJECT_PRESENTATION -> """
-                    project_name: наименование проекта.
+                    project_name: название проекта.
                     project_description: краткое описание проекта.
                     """;
 
             case COST_JUSTIFICATION -> """
                     total_expenses: общая сумма расходов.
                     own_funds: сумма собственных средств.
-                    expense_items: статьи расходов кратким текстом.
-                    Не подменяй собственные средства
-                    запрашиваемой субсидией.
+                    expense_items: основные статьи расходов.
+                    Не подменяй собственные средства субсидией.
                     """;
 
             case BANK_STATEMENT -> """
-                    organization: владелец счёта, не название банка.
-                    inn: ИНН владельца счёта, если указан.
-                    account_number: номер банковского счёта.
-                    account_balance: остаток денежных средств.
-                    document_date: дата банковского документа.
+                    organization: владелец счетов, а не банк.
+                    inn: только явно обозначенный ИНН клиента.
+                    document_date: дата банковской справки.
+
+                    passport_series: серия паспорта клиента,
+                    четыре цифры.
+
+                    passport_number: номер паспорта клиента,
+                    шесть цифр.
+
+                    passport_issued_by: орган выдачи паспорта клиента.
+                    passport_issue_date: дата выдачи паспорта клиента.
+
+                    Если в справке указан паспорт вида
+                    "6015 865696", отдели серию от номера.
+                    Это пример формата, а не значение для ответа.
+
+                    Не записывай десять цифр паспорта в inn.
+                    Не используй ИНН банка в качестве ИНН клиента.
+
+                    accounts: массив всех отдельных счетов.
+
+                    Для каждого элемента accounts:
+                    account_number: номер соответствующего счёта.
+                    account_balance: остаток на этом счёте.
+
+                    Не объединяй остатки разных счетов.
+                    Если связь номера и остатка сомнительна,
+                    добавь accounts в uncertain_fields.
                     """;
 
             case REAL_ESTATE_DOCUMENT -> """
                     cadastral_number: кадастровый номер объекта.
-                    area: площадь объекта.
+                    area: площадь.
                     property_purpose: назначение объекта.
-                    address: адрес объекта недвижимости.
-                    rights_holder: правообладатель, если указан.
+                    address: адрес недвижимости.
+                    rights_holder: правообладатель.
                     Не записывай Роскадастр в правообладатели.
                     """;
 
             case GUARANTEE_LETTER -> """
-                    organization: организация-гарант.
-                    inn: ИНН организации-гаранта, если указан.
-                    guarantee_amount: сумма гарантии.
+                    organization: организация или ИП-гарант.
+                    inn: ИНН гаранта, если указан.
+                    guarantee_amount: конкретная сумма гарантии.
                     document_date: дата гарантийного письма.
-                    signatory: подписант гарантийного письма.
+                    signatory: подписант письма.
                     """;
 
             default -> "";

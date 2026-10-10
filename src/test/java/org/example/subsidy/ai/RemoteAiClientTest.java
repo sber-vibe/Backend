@@ -36,6 +36,21 @@ class RemoteAiClientTest {
             assertTrue(result.fields().stream().anyMatch(f -> f.name().equals("company_name") && "Тест".equals(f.value())));
         } finally { server.stop(0); }
     }
+    @Test void preservesMultipleBankAccountsWithoutInventingAnAggregateBalance() {
+        var result = ApplicationDocumentRecognizer.parse(RemoteAiClient.adapt("""
+                {"document_type":"BANK_STATEMENT","fields":{"accounts":[
+                  {"account_number":"111","account_balance":"600000"},
+                  {"account_number":"222","account_balance":"3000000"}],
+                  "passport_details":{"passport_series":"1234","passport_number":"567890"}}}
+                """));
+        assertTrue(result.fields().stream().anyMatch(f -> f.name().equals("accounts") && f.value().toString().contains("3000000")));
+        assertTrue(result.fields().stream().anyMatch(f -> f.name().equals("passport_details") && f.value().toString().contains("567890")));
+        assertNull(result.fields().stream().filter(f -> f.name().equals("balance")).findFirst().orElseThrow().value());
+        var single = ApplicationDocumentRecognizer.parse(RemoteAiClient.adapt("""
+                {"document_type":"BANK_STATEMENT","fields":{"accounts":[{"account_number":"111","account_balance":"600000"}]}}
+                """));
+        assertEquals(new BigDecimal("600000"), single.fields().stream().filter(f -> f.name().equals("balance")).findFirst().orElseThrow().value());
+    }
     @Test void mapsConsentAndRejectsInvalidResponseOrMissingCredentials() {
         var result = ApplicationDocumentRecognizer.parse(RemoteAiClient.adapt("{\"document_type\":\"PERSONAL_DATA_CONSENT\",\"fields\":{}}"));
         assertEquals(DocumentType.PD_CONSENT, result.detectedType());

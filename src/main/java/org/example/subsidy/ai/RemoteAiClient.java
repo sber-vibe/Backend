@@ -77,9 +77,21 @@ public class RemoteAiClient {
             for (var entry : fields.properties()) {
                 var field = entries.addObject();
                 field.put("name", entry.getKey());
-                field.set("value", entry.getValue());
+                if (entry.getValue().isContainer()) field.put("value", JSON.writeValueAsString(entry.getValue()));
+                else field.set("value", entry.getValue());
                 field.putNull("confidence");
                 field.putNull("source");
+            }
+            if ("BANK_STATEMENT".equals(type) && fields.get("accounts") != null && !fields.has("account_balance")) {
+                var balance = entries.addObject();
+                balance.put("name", "account_balance");
+                var accounts = fields.get("accounts");
+                if (accounts.isArray() && accounts.size() == 1 && accounts.get(0).isObject()
+                        && accounts.get(0).get("account_balance") != null)
+                    balance.set("value", accounts.get(0).get("account_balance"));
+                else balance.putNull("value");
+                balance.putNull("confidence");
+                balance.putNull("source");
             }
         } else throw new IllegalStateException("Некорректные реквизиты удалённого анализа");
         return JSON.writeValueAsString(result);

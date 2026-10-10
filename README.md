@@ -1,3 +1,4 @@
+
 # Backend – проверка пакета документов на субсидию
 
 Заготовка для кейса «Агентство инноваций» на хакатоне Сбера. Java, Spring Boot 4.1.1, Gradle, REST API.
@@ -26,7 +27,9 @@
 ```
 
 Linux/macOS: `sh ./gradlew test bootJar`, затем `sh ./gradlew bootRun`.
+
 Сервис: http://localhost:8080. Health: `GET /actuator/health`.
+
 Порт задаётся переменной окружения `PORT`. Собранный JAR: `build/libs/backend.jar`.
 
 ```sh
@@ -91,6 +94,7 @@ curl -X POST http://localhost:8080/api/v1/applications \
   -d '{}'
 curl -X POST http://localhost:8080/api/v1/applications/UUID/documents \
   -F 'type=APPLICATION' -F 'file=@application.pdf'
+
 curl -X POST http://localhost:8080/api/v1/applications/UUID/check
 ```
 
@@ -100,6 +104,7 @@ curl -X POST http://localhost:8080/api/v1/applications/UUID/check
 Ошибки API заявок содержат понятное описание на русском языке.
 Файл: до 50 MiB; форматы по расширению: PDF, DOC, DOCX, XLS, XLSX, TXT, PNG, JPG, JPEG.
 При загрузке в заявку фактическое содержимое и MIME-тип не проверяются. Скачивание выполняется как двоичный attachment.
+
 До 100 заявок, 20 документов на заявку и 50 MiB файлов суммарно для одного процесса.
 
 ### Реквизиты и обработка
