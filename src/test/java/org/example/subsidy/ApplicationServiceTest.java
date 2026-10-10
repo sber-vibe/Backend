@@ -52,6 +52,20 @@ class ApplicationServiceTest {
     }
 
     @Test
+    void acceptsFilesAboveOldLimitAndRejectsFilesAboveFiftyMiB() throws Exception {
+        UUID id = create();
+        var accepted = service.upload(id, null, new MockMultipartFile("file", "large.pdf", "application/pdf",
+                new byte[11 * 1024 * 1024]));
+        assertEquals(11 * 1024 * 1024, accepted.size());
+        var oversized = new MockMultipartFile("file", "large.pdf", "application/pdf", new byte[]{1}) {
+            @Override public long getSize() { return 50L * 1024 * 1024 + 1; }
+        };
+        var error = assertThrows(ResponseStatusException.class, () -> service.upload(id, null, oversized));
+        assertEquals(413, error.getStatusCode().value());
+        assertEquals(1, service.get(id).documents().size());
+    }
+
+    @Test
     void unknownApplicationReturnsNotFound() {
         var exception = assertThrows(ResponseStatusException.class, () -> service.get(UUID.randomUUID()));
         assertEquals(404, exception.getStatusCode().value());

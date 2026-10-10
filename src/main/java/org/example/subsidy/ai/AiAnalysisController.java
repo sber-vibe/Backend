@@ -15,7 +15,7 @@ import java.io.IOException;
 public class AiAnalysisController {
 
     private static final long MAX_FILE_SIZE =
-            10L * 1024 * 1024;
+            50L * 1024 * 1024;
 
     private final AiAnalysisService service;
 
@@ -42,7 +42,7 @@ public class AiAnalysisController {
         if (file.getSize() > MAX_FILE_SIZE) {
             throw new ResponseStatusException(
                     HttpStatus.PAYLOAD_TOO_LARGE,
-                    "File exceeds 10 MB"
+                    "File exceeds 50 MB"
             );
         }
 
@@ -51,7 +51,7 @@ public class AiAnalysisController {
         if (data.length > MAX_FILE_SIZE) {
             throw new ResponseStatusException(
                     HttpStatus.PAYLOAD_TOO_LARGE,
-                    "File exceeds 10 MB"
+                    "File exceeds 50 MB"
             );
         }
 

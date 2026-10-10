@@ -121,4 +121,35 @@ class ApplicationRequisitesApiTest {
         for (var field : fields) if (name.equals(field.get("name").asString())) return field;
         throw new AssertionError("Missing field " + name);
     }
+
+    @Test
+    void elevenMiBPdfPassesMultipartAndIsolatedParser() throws Exception {
+        byte[] pdf;
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument();
+             var output = new java.io.ByteArrayOutputStream()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(output);
+            pdf = Arrays.copyOf(output.toByteArray(), 11 * 1024 * 1024);
+            Arrays.fill(pdf, output.size(), pdf.length, (byte) ' ');
+        }
+        String appPath = request("/api/v1/applications", "POST", "{}").headers().firstValue("Location").orElseThrow();
+        String boundary = "large-pdf-boundary";
+        var multipart = new java.io.ByteArrayOutputStream();
+        multipart.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.pdf\"\r\nContent-Type: application/pdf\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        multipart.write(pdf);
+        multipart.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        var uploaded = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + appPath + "/documents"))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(multipart.toByteArray())).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(201, uploaded.statusCode(), uploaded.body());
+        assertEquals(11 * 1024 * 1024, JSON.readTree(uploaded.body()).get("size").asInt());
+        JsonNode app;
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        do {
+            app = JSON.readTree(request(appPath, "GET", null).body());
+            if (Set.of("DONE", "FAILED").contains(app.get("documents").get(0).get("processingStatus").asString())) break;
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        assertEquals("DONE", app.get("documents").get(0).get("processingStatus").asString(), app.toString());
+    }
 }

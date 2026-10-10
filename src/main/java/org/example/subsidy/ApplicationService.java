@@ -15,7 +15,7 @@ import static org.example.subsidy.Models.*;
 
 @Service
 public class ApplicationService {
-    private static final long MAX_FILE_SIZE = 10 * 1024 * 1024;
+    private static final long MAX_FILE_SIZE = 50 * 1024 * 1024;
     private static final long MAX_TOTAL_SIZE = 50 * 1024 * 1024;
     private static final List<String> REQUISITES = List.of("company_name", "inn", "kpp", "project_name", "requested_amount");
     private static final EnumSet<DocumentType> REQUIRED = EnumSet.of(DocumentType.APPLICATION, DocumentType.REGISTRATION_EXTRACT, DocumentType.COST_ESTIMATE);
@@ -68,12 +68,12 @@ public class ApplicationService {
         var state = require(id);
         if (state.documents.size() >= 20) throw error(HttpStatus.CONFLICT, "Достигнут лимит: 20 документов в заявке");
         if (file.isEmpty()) throw error(HttpStatus.BAD_REQUEST, "Файл пустой");
-        if (file.getSize() > MAX_FILE_SIZE || storedBytes + file.getSize() > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 10 МБ на файл, 50 МБ на все документы");
+        if (file.getSize() > MAX_FILE_SIZE || storedBytes + file.getSize() > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 50 МБ на файл, 50 МБ на все документы");
         String filename = file.getOriginalFilename();
         if (filename == null || filename.length() > 255 || filename.contains("/") || filename.contains("\\") || filename.chars().anyMatch(Character::isISOControl)) throw error(HttpStatus.BAD_REQUEST, "Недопустимое имя файла");
         if (!filename.toLowerCase(Locale.ROOT).matches(".+\\.(pdf|docx|txt|png|jpg|jpeg)$")) throw error(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Допустимые форматы: PDF, DOCX, TXT, PNG, JPG, JPEG");
         byte[] content = file.getBytes();
-        if (content.length > MAX_FILE_SIZE || storedBytes + content.length > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 10 МБ на файл, 50 МБ на все документы");
+        if (content.length > MAX_FILE_SIZE || storedBytes + content.length > MAX_TOTAL_SIZE) throw error(HttpStatus.PAYLOAD_TOO_LARGE, "Превышен лимит: 50 МБ на файл, 50 МБ на все документы");
         var document = new StoredDocument(UUID.randomUUID(), type, filename, content, Instant.now());
         state.documents.put(document.id, document);
         storedBytes += content.length;

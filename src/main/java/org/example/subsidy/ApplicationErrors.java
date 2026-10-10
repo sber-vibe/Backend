@@ -27,6 +27,6 @@ public class ApplicationErrors {
     }
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ProblemDetail large(MaxUploadSizeExceededException exception) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.PAYLOAD_TOO_LARGE, "Файл больше 10 МБ");
+        return ProblemDetail.forStatusAndDetail(HttpStatus.PAYLOAD_TOO_LARGE, "Файл больше 50 МБ");
     }
 }

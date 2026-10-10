@@ -92,7 +92,7 @@ curl -X POST http://localhost:8080/api/v1/applications/UUID/check
 
 Ошибки возвращаются в формате Problem Details (`application/problem+json`).
 Ошибки API заявок содержат понятное описание на русском языке.
-Файл: до 10 MiB; форматы по расширению: PDF, DOCX, TXT, PNG, JPG, JPEG.
+Файл: до 50 MiB; форматы по расширению: PDF, DOCX, TXT, PNG, JPG, JPEG.
 При загрузке в заявку фактическое содержимое и MIME-тип не проверяются. Скачивание выполняется как двоичный attachment.
 До 100 заявок, 20 документов на заявку и 50 MiB файлов суммарно для одного процесса.
 
@@ -163,7 +163,7 @@ ollama pull qwen3-vl:4b-instruct
 - Тип запроса: `multipart/form-data`.
 - Поле файла: `file`.
 - Поддерживаемые форматы: PDF, DOCX, TXT, PNG, JPG, JPEG.
-- Максимальный размер входного файла: 10 MiB.
+- Максимальный размер входного файла: 50 MiB.
 - Авторизация: заголовок `X-Api-Key`.
 
 Пример запроса из PowerShell:

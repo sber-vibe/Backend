@@ -36,7 +36,7 @@ public class DocumentContentReader implements DocumentReader {
     private static final int MAX_IMAGE_PAGES = 2;
     private static final int MAX_TEXT_LENGTH = 6000;
     private static final long MAX_PIXELS = 20_000_000L;
-    private static final int MAX_FILE_BYTES = 10 * 1024 * 1024;
+    private static final int MAX_FILE_BYTES = 50 * 1024 * 1024;
     private static final int MAX_DOCX_ENTRIES = 256;
     private static final long MAX_DOCX_ENTRY_BYTES = 16L * 1024 * 1024;
     private static final long MAX_DOCX_TOTAL_BYTES = 32L * 1024 * 1024;
