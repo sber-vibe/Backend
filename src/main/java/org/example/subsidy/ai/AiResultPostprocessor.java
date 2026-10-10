@@ -6,6 +6,8 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,7 +21,6 @@ public final class AiResultPostprocessor {
 
     public static String process(String rawJson) {
 
-
         JsonNode source;
 
         try {
@@ -32,18 +33,13 @@ public final class AiResultPostprocessor {
 
         if (source == null || !source.isObject()) {
             throw new IllegalStateException(
-                    "AI response must be a JSON object"
+                    "AI response must be an object"
             );
         }
 
-        if (source.size() != AiDocumentContract.RAW_FIELDS.size()) {
-            throw new IllegalStateException(
-                    "Unexpected AI response fields"
-            );
-        }
-
-
-        String type = requiredString(source, AiDocumentContract.DOCUMENT_TYPE);
+        String type = requiredString(
+                source, AiDocumentContract.DOCUMENT_TYPE
+        );
 
         if (!AiDocumentContract.DOCUMENT_TYPES.contains(type)) {
             throw new IllegalStateException(
@@ -51,7 +47,18 @@ public final class AiResultPostprocessor {
             );
         }
 
-        JsonNode uncertain = source.get(AiDocumentContract.UNCERTAIN_FIELDS);
+        List<String> expectedFields =
+                AiDocumentContract.fieldsFor(type);
+
+        if (source.size() != expectedFields.size() + 2) {
+            throw new IllegalStateException(
+                    "Unexpected AI response fields"
+            );
+        }
+
+        JsonNode uncertain = source.get(
+                AiDocumentContract.UNCERTAIN_FIELDS
+        );
 
         if (uncertain == null || !uncertain.isArray()) {
             throw new IllegalStateException(
@@ -64,40 +71,44 @@ public final class AiResultPostprocessor {
 
         ObjectNode fields = result.putObject("fields");
 
-        for (String name : AiDocumentContract.DATA_FIELDS) {
-            String value = requiredString(source, name).trim();
+        for (String field : expectedFields) {
 
-            if (name.equals("purpose")
-                    && type.equals(AiDocumentContract.UNKNOWN)) {
-                value = "";
-            }
+            String value = requiredString(source, field).strip();
 
             if (value.isEmpty()) {
-                fields.putNull(name);
+                fields.putNull(field);
             } else {
-                fields.put(name, value);
+                fields.put(field, value);
             }
         }
 
         List<String> warnings = new ArrayList<>();
 
         if (type.equals(AiDocumentContract.UNKNOWN)) {
-            warnings.add(
-                    "Тип не определён текущим классификатором"
-            );
+            warnings.add("Тип документа не определён");
         }
 
-        checkInn(fields, "inn", "заявителя", warnings);
-        checkInn(fields, "bank_inn", "банка", warnings);
+        for (String required : AiDocumentContract.requiredFor(type)) {
 
-        checkKpp(fields, "kpp", "заявителя", warnings);
-        checkKpp(fields, "bank_kpp", "банка", warnings);
+            JsonNode value = fields.get(required);
 
-        checkDocumentDate(fields, warnings);
-        checkRequestedAmount(fields, warnings);
+            if (value == null || value.isNull()) {
+                warnings.add(
+                        "Не найден обязательный реквизит: "
+                                + required
+                );
+            }
+        }
 
-        ArrayNode uncertainOutput =
-                result.putArray(AiDocumentContract.UNCERTAIN_FIELDS);
+        checkInn(fields, warnings);
+        checkKpp(fields, warnings);
+        checkDates(fields, warnings);
+        checkAmounts(fields, warnings);
+        checkCadastralNumber(fields, warnings);
+
+        ArrayNode uncertainOutput = result.putArray(
+                AiDocumentContract.UNCERTAIN_FIELDS
+        );
 
         for (JsonNode item : uncertain) {
 
@@ -109,7 +120,8 @@ public final class AiResultPostprocessor {
 
             String name = item.asString();
 
-            if (!AiDocumentContract.UNCERTAIN_FIELD_NAMES.contains(name)) {
+            if (!name.equals(AiDocumentContract.DOCUMENT_TYPE)
+                    && !expectedFields.contains(name)) {
                 throw new IllegalStateException(
                         "Unknown uncertain field: " + name
                 );
@@ -122,10 +134,10 @@ public final class AiResultPostprocessor {
             );
         }
 
-        ArrayNode warningArray = result.putArray("warnings");
+        ArrayNode warningOutput = result.putArray("warnings");
 
         for (String warning : warnings) {
-            warningArray.add(warning);
+            warningOutput.add(warning);
         }
 
         result.put("needs_review", !warnings.isEmpty());
@@ -134,9 +146,10 @@ public final class AiResultPostprocessor {
     }
 
     private static String requiredString(
-            JsonNode source, String field) {
-
-        JsonNode value = source.get(field);
+            JsonNode object,
+            String field
+    ) {
+        JsonNode value = object.get(field);
 
         if (value == null || !value.isString()) {
             throw new IllegalStateException(
@@ -149,92 +162,127 @@ public final class AiResultPostprocessor {
 
     private static void checkInn(
             ObjectNode fields,
-            String field,
-            String owner,
-            List<String> warnings) {
+            List<String> warnings
+    ) {
+        String inn = value(fields, "inn");
 
-        JsonNode node = fields.get(field);
-
-        if (node == null || node.isNull()) {
-            return;
-        }
-
-        String inn = node.asString();
-
-        if (!InnValidator.isValid(inn)) {
+        if (inn != null && !InnValidator.isValid(inn)) {
             warnings.add(
-                    "ИНН " + owner
-                            + " не прошёл проверку контрольных цифр"
+                    "ИНН не прошёл проверку контрольных цифр"
             );
         }
     }
 
     private static void checkKpp(
             ObjectNode fields,
-            String field,
-            String owner,
-            List<String> warnings) {
+            List<String> warnings
+    ) {
+        String kpp = value(fields, "kpp");
 
-        JsonNode node = fields.get(field);
-
-        if (node == null || node.isNull()) {
-            return;
-        }
-
-        if (!node.asString().matches("[0-9]{9}")) {
-            warnings.add(
-                    "КПП " + owner + " имеет неверный формат"
-            );
+        if (kpp != null && !kpp.matches("[0-9]{9}")) {
+            warnings.add("КПП имеет неверный формат");
         }
     }
 
-    private static void checkDocumentDate(
+    private static void checkDates(
             ObjectNode fields,
-            List<String> warnings) {
+            List<String> warnings
+    ) {
+        for (String field : List.of(
+                "document_date", "issue_date", "valid_until"
+        )) {
+            String raw = value(fields, field);
 
-        JsonNode node = fields.get("document_date");
+            if (raw == null) {
+                continue;
+            }
 
-        if (node == null || node.isNull()) {
-            return;
-        }
+            var parsed = DocumentFieldChecks.parseDate(raw);
 
-        String date = node.asString();
+            if (parsed.isEmpty()) {
+                warnings.add(
+                        "Некорректная дата: " + field
+                );
+                continue;
+            }
 
-        if (DocumentFieldChecks.parseDate(date).isEmpty()) {
-            warnings.add(
-                    "Дата документа имеет неверный формат "
-                            + "или не существует: " + date
-            );
+            LocalDate date = parsed.get();
+
+            if (!field.equals("valid_until")
+                    && date.isAfter(LocalDate.now())) {
+                warnings.add(
+                        "Дата находится в будущем: " + field
+                );
+            }
+
+            if (field.equals("valid_until")
+                    && date.isBefore(LocalDate.now())) {
+                warnings.add(
+                        "Срок действия документа истёк"
+                );
+            }
         }
     }
 
-    private static void checkRequestedAmount(
+    private static void checkAmounts(
             ObjectNode fields,
-            List<String> warnings) {
+            List<String> warnings
+    ) {
+        for (String field : List.of(
+                "requested_amount",
+                "total_expenses",
+                "own_funds",
+                "account_balance",
+                "guarantee_amount"
+        )) {
+            String raw = value(fields, field);
 
-        JsonNode node = fields.get("requested_amount");
+            if (raw == null) {
+                continue;
+            }
 
-        if (node == null || node.isNull()) {
-            return;
+            var amount = DocumentFieldChecks.parseAmount(raw);
+
+            if (amount.isEmpty()) {
+                warnings.add(
+                        "Некорректная сумма: " + field
+                );
+                continue;
+            }
+
+            if (!field.equals("account_balance")
+                    && amount.get().compareTo(BigDecimal.ZERO) <= 0) {
+                warnings.add(
+                        "Сумма должна быть положительной: " + field
+                );
+            }
         }
+    }
 
-        String original = node.asString();
+    private static void checkCadastralNumber(
+            ObjectNode fields,
+            List<String> warnings
+    ) {
+        String cadastral = value(fields, "cadastral_number");
 
-        var amount = DocumentFieldChecks.parseAmount(original);
-
-        if (amount.isEmpty()) {
+        if (cadastral != null
+                && !cadastral.matches(
+                "[0-9]{2}:[0-9]{2}:[0-9]{6,7}:[0-9]+"
+        )) {
             warnings.add(
-                    "Не удалось однозначно распознать сумму: "
-                            + original
-            );
-            return;
-        }
-
-        if (amount.get().signum() <= 0) {
-            warnings.add(
-                    "Запрашиваемая сумма должна быть положительной"
+                    "Кадастровый номер имеет неверный формат"
             );
         }
     }
 
+    private static String value(
+            ObjectNode fields,
+            String name
+    ) {
+        JsonNode node = fields.get(name);
+
+        return node == null || node.isNull()
+                ? null
+                : node.asString();
+    }
 }

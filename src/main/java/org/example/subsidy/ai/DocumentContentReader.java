@@ -2,17 +2,20 @@
 package org.example.subsidy.ai;
 
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
-import org.apache.pdfbox.pdmodel.PDPage;
-import org.apache.pdfbox.pdmodel.common.PDRectangle;
-import org.apache.pdfbox.io.MemoryUsageSetting;
 
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.MemoryCacheImageInputStream;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -20,31 +23,28 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import javax.imageio.ImageReader;
-import javax.imageio.stream.ImageInputStream;
-import javax.imageio.stream.MemoryCacheImageInputStream;
-import java.util.Iterator;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-
 public class DocumentContentReader implements DocumentReader {
 
-    private static final int MAX_PAGES = 10;
+    private static final int MAX_PAGES = 30;
     private static final int MAX_IMAGE_PAGES = 2;
-    private static final int MAX_TEXT_LENGTH = 6000;
+    private static final int MAX_TEXT_LENGTH = 64_000;
     private static final long MAX_PIXELS = 20_000_000L;
     private static final int MAX_FILE_BYTES = 50 * 1024 * 1024;
     private static final int MAX_DOCX_ENTRIES = 256;
     private static final long MAX_DOCX_ENTRY_BYTES = 16L * 1024 * 1024;
     private static final long MAX_DOCX_TOTAL_BYTES = 32L * 1024 * 1024;
+
     private static final long MAX_PDF_CACHE_MEMORY = 8L * 1024 * 1024;
     private static final long MAX_PDF_CACHE_TOTAL = 64L * 1024 * 1024;
     private static final int MAX_PDF_IMAGE_BYTES = 8 * 1024 * 1024;
 
-
+    @Override
     public DocumentContent read(byte[] data, String filename)
             throws IOException {
 
@@ -107,7 +107,7 @@ public class DocumentContentReader implements DocumentReader {
 
         if (content.text().length() > MAX_TEXT_LENGTH) {
             throw new IOException(
-                    "Document text exceeds prototype limit"
+                    "Document text exceeds safety limit"
             );
         }
 
@@ -145,6 +145,7 @@ public class DocumentContentReader implements DocumentReader {
 
             StringBuilder text = new StringBuilder();
             List<byte[]> images = new ArrayList<>();
+            List<Integer> budgetPages = new ArrayList<>();
 
             for (int i = 0; i < pageCount; i++) {
 
@@ -152,6 +153,13 @@ public class DocumentContentReader implements DocumentReader {
                 stripper.setEndPage(i + 1);
 
                 String pageText = stripper.getText(pdf).strip();
+                String lower = pageText.toLowerCase(Locale.ROOT);
+
+                if (lower.contains("запрашиваем")
+                        && lower.contains("софинансирован")
+                        && lower.contains("итого")) {
+                    budgetPages.add(i);
+                }
 
                 if (!pageText.isBlank()) {
 
@@ -169,63 +177,9 @@ public class DocumentContentReader implements DocumentReader {
                         );
                     }
 
-
-                    PDPage page = pdf.getPage(i);
-                    PDRectangle cropBox = page.getCropBox();
-
-                    double scale = (180.0 / 72.0) * page.getUserUnit();
-
-                    double widthPixels =
-                            Math.ceil(cropBox.getWidth() * scale);
-
-                    double heightPixels =
-                            Math.ceil(cropBox.getHeight() * scale);
-
-                    if (!Double.isFinite(widthPixels)
-                            || !Double.isFinite(heightPixels)
-                            || widthPixels <= 0
-                            || heightPixels <= 0
-                            || widthPixels > 8000
-                            || heightPixels > 8000
-                            || widthPixels * heightPixels > MAX_PIXELS) {
-
-                        throw new IOException(
-                                "PDF page dimensions exceed safety limit"
-                        );
-                    }
-
-                    BufferedImage image =
-                            renderer.renderImageWithDPI(
-                                    i, 180, ImageType.RGB
-                            );
-
-
-                    try {
-                        long pixels = (long) image.getWidth()
-                                * image.getHeight();
-
-                        if (pixels > MAX_PIXELS) {
-                            throw new IOException(
-                                    "PDF page image is too large"
-                            );
-                        }
-
-                        try (BoundedByteArrayOutputStream output =
-                                     new BoundedByteArrayOutputStream(
-                                             MAX_PDF_IMAGE_BYTES
-                                     )) {
-
-                            if (!ImageIO.write(image, "png", output)) {
-                                throw new IOException(
-                                        "Cannot render PDF page"
-                                );
-                            }
-
-                            images.add(output.toByteArray());
-                        }
-                    } finally {
-                        image.flush();
-                    }
+                    images.add(
+                            renderPage(renderer, pdf, i, 180)
+                    );
 
                     text.append("\n[Страница ")
                             .append(i + 1)
@@ -233,12 +187,104 @@ public class DocumentContentReader implements DocumentReader {
                             .append(images.size())
                             .append("]\n");
                 }
+
+                if (text.length() > MAX_TEXT_LENGTH) {
+                    throw new IOException(
+                            "Document text exceeds safety limit"
+                    );
+                }
+            }
+
+            if (images.isEmpty() && !budgetPages.isEmpty()) {
+
+                int start = Math.max(
+                        0,
+                        budgetPages.size() - MAX_IMAGE_PAGES
+                );
+
+                for (int j = start; j < budgetPages.size(); j++) {
+                    images.add(
+                            renderPage(
+                                    renderer,
+                                    pdf,
+                                    budgetPages.get(j),
+                                    140
+                            )
+                    );
+                }
             }
 
             return new DocumentContent(
                     text.toString().strip(),
                     List.copyOf(images)
             );
+        }
+    }
+
+    private byte[] renderPage(
+            PDFRenderer renderer,
+            PDDocument pdf,
+            int pageIndex,
+            int dpi
+    ) throws IOException {
+
+        PDPage page = pdf.getPage(pageIndex);
+        PDRectangle cropBox = page.getCropBox();
+
+        double scale = (dpi / 72.0) * page.getUserUnit();
+
+        double widthPixels =
+                Math.ceil(cropBox.getWidth() * scale);
+
+        double heightPixels =
+                Math.ceil(cropBox.getHeight() * scale);
+
+        if (!Double.isFinite(widthPixels)
+                || !Double.isFinite(heightPixels)
+                || widthPixels <= 0
+                || heightPixels <= 0
+                || widthPixels > 8000
+                || heightPixels > 8000
+                || widthPixels * heightPixels > MAX_PIXELS) {
+
+            throw new IOException(
+                    "PDF page dimensions exceed safety limit"
+            );
+        }
+
+        BufferedImage image =
+                renderer.renderImageWithDPI(
+                        pageIndex,
+                        dpi,
+                        ImageType.RGB
+                );
+
+        try {
+            long actualPixels =
+                    (long) image.getWidth() * image.getHeight();
+
+            if (actualPixels > MAX_PIXELS) {
+                throw new IOException(
+                        "PDF page image exceeds safety limit"
+                );
+            }
+
+            try (BoundedByteArrayOutputStream output =
+                         new BoundedByteArrayOutputStream(
+                                 MAX_PDF_IMAGE_BYTES
+                         )) {
+
+                if (!ImageIO.write(image, "png", output)) {
+                    throw new IOException(
+                            "Cannot encode PDF page"
+                    );
+                }
+
+                return output.toByteArray();
+            }
+
+        } finally {
+            image.flush();
         }
     }
 
@@ -274,7 +320,6 @@ public class DocumentContentReader implements DocumentReader {
 
         return text.strip();
     }
-
 
     private void validateImage(byte[] data) throws IOException {
 
@@ -319,23 +364,6 @@ public class DocumentContentReader implements DocumentReader {
                 reader.dispose();
             }
         }
-    }
-
-
-    private static boolean startsWith(
-            byte[] data, byte[] prefix) {
-
-        if (data.length < prefix.length) {
-            return false;
-        }
-
-        for (int i = 0; i < prefix.length; i++) {
-            if (data[i] != prefix[i]) {
-                return false;
-            }
-        }
-
-        return true;
     }
 
 
@@ -407,6 +435,22 @@ public class DocumentContentReader implements DocumentReader {
         }
     }
 
+    private static boolean startsWith(
+            byte[] data,
+            byte[] prefix
+    ) {
+        if (data.length < prefix.length) {
+            return false;
+        }
+
+        for (int i = 0; i < prefix.length; i++) {
+            if (data[i] != prefix[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static void require(boolean valid)
             throws IOException {
