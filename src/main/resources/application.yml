@@ -15,3 +15,8 @@ management:
     web:
       exposure:
         include: health,info
+ai:
+  ollama:
+    url: ${OLLAMA_URL:http://127.0.0.1:11434}
+  vision:
+    model: ${OLLAMA_MODEL:qwen3-vl:4b-instruct}
