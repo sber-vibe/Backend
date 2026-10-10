@@ -36,6 +36,19 @@ docker run --rm -p 8080:8080 subsidy-backend
 
 При запуске AI-модуля в Docker необходимо отдельно настроить доступ контейнера к Ollama через `OLLAMA_URL`. Адрес `127.0.0.1` внутри контейнера не указывает на хостовый компьютер.
 
+## Авторизация (Keycloak)
+
+Если задан JWKS, `/api/**` принимает только JWT от Keycloak (`Authorization: Bearer …`) с realm-ролью `specialist` или `admin`:
+
+| Переменная | Пример |
+|---|---|
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI` | `http://keycloak:8080/kc/realms/subsidy/protocol/openid-connect/certs` |
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI` | `http://localhost/kc/realms/subsidy` — issuer из токена (публичный адрес) |
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES` | `subsidy-backend` |
+
+Проверяются подпись, срок действия, issuer и audience. Без токена — `401`, без нужной роли — `403`, оба в формате Problem Details.
+`/actuator/health` и `/actuator/info` открыты. Если JWKS не задан, API открыт (демо-режим, как раньше).
+
 ## API заявок
 
 | Метод | Путь | Назначение |
@@ -193,7 +206,7 @@ curl.exe -X POST "http://localhost:8080/api/v1/ai/analyze" `
 После загрузки или удаления документа предыдущий отчёт сбрасывается.
 
 Данные заявок и загруженные в них файлы хранятся в памяти и теряются при перезапуске.
-Авторизация основного API заявок пока не реализована; отдельный AI API защищён ключом `X-Api-Key`.
+Авторизация `/api/**` — через Keycloak при заданном JWKS (см. выше); AI API дополнительно защищён ключом `X-Api-Key`.
 Для демонстрации используйте синтетические документы.
 
 AI-анализ и извлечение реквизитов реализованы как самостоятельный модуль, но не интегрированы с проверкой заявок. Проверка подписей, постоянное хранилище PostgreSQL/S3 и роли пользователей пока не реализованы.
