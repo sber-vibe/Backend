@@ -20,6 +20,19 @@ docker build -t subsidy-backend .
 docker run --rm -p 8080:8080 subsidy-backend
 ```
 
+## Авторизация (Keycloak)
+
+Если задан JWKS, `/api/**` принимает только JWT от Keycloak (`Authorization: Bearer …`) с realm-ролью `specialist` или `admin`:
+
+| Переменная | Пример |
+|---|---|
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI` | `http://keycloak:8080/kc/realms/subsidy/protocol/openid-connect/certs` |
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI` | `http://localhost/kc/realms/subsidy` — issuer из токена (публичный адрес) |
+| `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES` | `subsidy-backend` |
+
+Проверяются подпись, срок действия, issuer и audience. Без токена — `401`, без нужной роли — `403`, оба в формате Problem Details.
+`/actuator/health` и `/actuator/info` открыты. Если JWKS не задан, API открыт (демо-режим, как раньше).
+
 ## API
 
 | Метод | Путь | Назначение |
@@ -71,7 +84,7 @@ curl -X POST http://localhost:8080/api/v1/applications/UUID/check
 полный — `REVIEW_REQUIRED`. Решение об одобрении сервис не принимает.
 После загрузки или удаления документа предыдущий отчёт сбрасывается.
 
-Данные и файлы хранятся в памяти и теряются при перезапуске. Авторизации нет;
+Данные и файлы хранятся в памяти и теряются при перезапуске. Авторизация — только при заданном Keycloak;
 для демо используйте синтетические документы. OCR, извлечение реквизитов, AI-анализ,
 проверка подписей, PostgreSQL/S3 и роли пользователей пока не реализованы.
 Для продолжения: уточнить регламент, заменить хранилище и вынести анализ документов
