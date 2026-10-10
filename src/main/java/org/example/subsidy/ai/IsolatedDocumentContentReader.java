@@ -24,7 +24,7 @@ public final class IsolatedDocumentContentReader
         implements DocumentReader {
 
     private static final int MAX_INPUT_BYTES =
-            10 * 1024 * 1024;
+            20 * 1024 * 1024;
 
     private static final int MAX_TEXT_BYTES = 256 * 1024;
     private static final int MAX_IMAGES = 2;
